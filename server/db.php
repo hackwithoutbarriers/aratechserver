@@ -238,3 +238,15 @@ function ara_metrics(array $config, string $period = 'today'): array
         return [];
     }
 }
+function ara_encrypt(string $data, string $key): string {
+    $iv = random_bytes(16);
+    $cipher = openssl_encrypt($data, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
+    return base64_encode($iv . $cipher);
+}
+
+function ara_decrypt(string $encrypted, string $key): string {
+    $decoded = base64_decode($encrypted);
+    $iv = substr($decoded, 0, 16);
+    $cipher = substr($decoded, 16);
+    return openssl_decrypt($cipher, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
+}
