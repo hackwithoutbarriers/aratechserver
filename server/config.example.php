@@ -55,6 +55,9 @@ return [
         // Nom du serveur hotspot RouterOS auquel rattacher l'utilisateur.
         // 'all' fonctionne si vous n'avez qu'un seul serveur hotspot.
         'hotspot_server' => 'all',
+        // Paramètres de connexion
+        'connect_retries' => 3,
+        'connect_timeout' => 10,
     ],
 
     // ================= Passerelle SMS =================
@@ -64,6 +67,8 @@ return [
         'api_url'   => 'https://api.votre-sms-gateway.com/send', // <-- À REMPLACER
         'api_key'   => 'VOTRE_CLE_API_SMS',                      // <-- À REMPLACER
         'sender_id' => 'ARATECH',                                // <-- Nom d'expéditeur si votre passerelle le supporte
+        'retry_attempts' => 3,
+        'backoff_base'   => 1,                    // secondes (exponentiel)
     ],
 
     // ================= Admin local pour mise à jour des annonces et fidélité =================
@@ -100,20 +105,15 @@ return [
         // '1.2.3.4',  // Exemple : IP du serveur webhook PayGate Global
         // '5.6.7.8',  // Autre IP redondante de PayGate
     ],
-    // À ajouter dans le tableau retourné
-'debug' => false,                             // true pour logs détaillés
-'maintenance' => [
-    'retention_days' => 90,                   // suppression des transactions > 90 jours
-    'log_rotation_size' => 10485760,          // 10 Mo
-],
-'sms' => [
-    'retry_attempts' => 3,
-    'backoff_base'   => 1,                    // secondes (exponentiel)
-],
-'mikrotik' => [
-    'connect_retries' => 3,
-    'connect_timeout' => 10,
-    'api_port'        => 8728,                // 8729 pour SSL
-],
-];
 
+    // ================= Paramètres de debug et maintenance =================
+    'debug' => false, // true pour logs détaillés
+    'maintenance' => [
+        'retention_days' => 90,          // suppression des transactions > 90 jours
+        'log_rotation_size' => 10485760, // 10 Mo
+    ],
+
+    // ================= Clé de chiffrement pour les données sensibles (optionnel) =================
+    // À utiliser avec les fonctions ara_encrypt/decrypt dans db.php
+    'encryption_key' => 'UNE_CLE_DE_32_OCTETS_POUR_AES256', // <-- À REMPLACER (32 caractères)
+];
