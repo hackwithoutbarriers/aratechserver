@@ -100,4 +100,20 @@ return [
         // '1.2.3.4',  // Exemple : IP du serveur webhook PayGate Global
         // '5.6.7.8',  // Autre IP redondante de PayGate
     ],
+    // À ajouter dans le tableau retourné
+'debug' => false,                             // true pour logs détaillés
+'maintenance' => [
+    'retention_days' => 90,                   // suppression des transactions > 90 jours
+    'log_rotation_size' => 10485760,          // 10 Mo
+],
+'sms' => [
+    'retry_attempts' => 3,
+    'backoff_base'   => 1,                    // secondes (exponentiel)
+],
+'mikrotik' => [
+    'connect_retries' => 3,
+    'connect_timeout' => 10,
+    'api_port'        => 8728,                // 8729 pour SSL
+],
 ];
+
