@@ -14,7 +14,7 @@ return [
     'mikrotik' => [
         'host'           => '192.168.88.1',
         'api_user'       => 'api-hotspot',
-        'api_password'   => 'VOTRE_MOT_DE_PASSE_API',
+        'api_password'   => '04011997',
         'api_port'       => 8728,
         'hotspot_server' => 'all',
         'connect_retries' => 3,
