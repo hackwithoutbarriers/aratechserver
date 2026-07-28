@@ -98,16 +98,20 @@ function ara_random_code(int $length = 6): string
 
 /**
  * Journalise un message dans le fichier de log configuré.
+ * Niveau de log : si debug activé, log plus détaillé.
  */
-function ara_log(string $message, array $config): void
+function ara_log(string $message, array $config, string $level = 'info'): void
 {
+    if ($config['debug'] === false && $level === 'debug') {
+        return;
+    }
     $dir = dirname($config['log_path']);
     if (!is_dir($dir)) {
         mkdir($dir, 0770, true);
     }
     file_put_contents(
         $config['log_path'],
-        '[' . date('Y-m-d H:i:s') . '] ' . $message . PHP_EOL,
+        '[' . date('Y-m-d H:i:s') . '] [' . strtoupper($level) . '] ' . $message . PHP_EOL,
         FILE_APPEND | LOCK_EX
     );
 }
@@ -128,17 +132,26 @@ function ara_maintenance(array $config, int $retention_days = 90): void
         $pdo->prepare(
             "DELETE FROM transactions WHERE status = 'completed' AND updated_at < :cutoff"
         )->execute([':cutoff' => $cutoff]);
-        $deleted = $pdo->exec("PRAGMA optimize"); // Compact database
+        $pdo->exec("PRAGMA optimize"); // Compact database
     } catch (Throwable $e) {
         error_log('[ARA Tech] Maintenance DB error: ' . $e->getMessage());
     }
 
-    // Rotation du log si > 10 MB
-    if (file_exists($config['log_path']) && filesize($config['log_path']) > 10485760) {
+    // Rotation du log si > 10 MB (configurable)
+    $logSize = $config['maintenance']['log_rotation_size'] ?? 10485760;
+    if (file_exists($config['log_path']) && filesize($config['log_path']) > $logSize) {
         $archivePath = $config['log_path'] . '.' . date('Y-m-d-His') . '.bak';
         rename($config['log_path'], $archivePath);
-        // Optionnel : gérez l'archivage/suppression des anciens fichiers .bak
-        // Exemple : unlink($archivePath) après compression ou après 30 jours
+        // Optionnel : supprimer les archives de plus de 30 jours
+        $glob = glob($config['log_path'] . '.*.bak');
+        if ($glob) {
+            $thirtyDaysAgo = time() - (30 * 86400);
+            foreach ($glob as $file) {
+                if (filemtime($file) < $thirtyDaysAgo) {
+                    unlink($file);
+                }
+            }
+        }
     }
 }
 
@@ -238,13 +251,21 @@ function ara_metrics(array $config, string $period = 'today'): array
         return [];
     }
 }
+
+// Optionnel : fonctions de chiffrement/déchiffrement
 function ara_encrypt(string $data, string $key): string {
+    if (strlen($key) !== 32) {
+        throw new InvalidArgumentException('La clé de chiffrement doit faire 32 octets pour AES-256-CBC.');
+    }
     $iv = random_bytes(16);
     $cipher = openssl_encrypt($data, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
     return base64_encode($iv . $cipher);
 }
 
 function ara_decrypt(string $encrypted, string $key): string {
+    if (strlen($key) !== 32) {
+        throw new InvalidArgumentException('La clé de chiffrement doit faire 32 octets pour AES-256-CBC.');
+    }
     $decoded = base64_decode($encrypted);
     $iv = substr($decoded, 0, 16);
     $cipher = substr($decoded, 16);

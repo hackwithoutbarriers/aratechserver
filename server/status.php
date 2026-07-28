@@ -34,7 +34,7 @@ try {
     $stmt->execute([':id' => $identifier]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
-    error_log('[ARA Tech][status.php] DB error: ' . $e->getMessage());
+    ara_log('status.php DB error: ' . $e->getMessage(), $config, 'error');
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'Erreur interne.']);
     exit;

@@ -71,7 +71,6 @@ if (empty($metrics)) {
     exit;
 }
 
-// ---------- 3) Enrichissement des données ----------
 $metrics['client_ip'] = $clientIp;
 $metrics['generated_at'] = date('c');
 

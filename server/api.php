@@ -10,11 +10,13 @@
  *   POST /api.php?route=admin_save_ad         -> add or update an ad (requires token)
  *   POST /api.php?route=admin_delete_ad       -> delete an ad (requires token)
  *   POST /api.php?route=admin_reseed_ads      -> reseed ads from ads.json (requires token)
+ *   GET  /api.php?route=expiry&user=          -> get expiry date for a user (connects to MikroTik)
  */
 
 declare(strict_types=1);
 
 require __DIR__ . '/db.php';
+require __DIR__ . '/RouterosAPI.php';
 $config = require __DIR__ . '/config.php';
 
 header('Content-Type: application/json; charset=utf-8');
@@ -223,7 +225,7 @@ switch ($route) {
             $stmt = $pdo->query('SELECT * FROM ads');
             $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) {
-            error_log('[ARA Tech][api.php] Ads DB error: ' . $e->getMessage());
+            ara_log('api.php Ads DB error: ' . $e->getMessage(), $config, 'error');
             json_error('Impossible de charger les annonces.', 500);
         }
         json_response(['success' => true, 'items' => active_items($items)]);
@@ -243,7 +245,7 @@ switch ($route) {
                 ? 'Vous avez atteint le nombre de recharges pour un avantage spécial. Contactez le support.'
                 : 'Rechargez ' . (5 - $topups) . ' fois de plus pour un bonus de 50%.';
         } catch (Throwable $e) {
-            error_log('[ARA Tech][api.php] Loyalty DB error: ' . $e->getMessage());
+            ara_log('api.php Loyalty DB error: ' . $e->getMessage(), $config, 'error');
             json_error('Impossible de récupérer le programme fidélité.', 500);
         }
         json_response([
@@ -268,7 +270,7 @@ switch ($route) {
             $pdo = ara_db($config);
             record_track_event($pdo, $id, $type, $user);
         } catch (Throwable $e) {
-            error_log('[ARA Tech][api.php] Track DB error: ' . $e->getMessage());
+            ara_log('api.php Track DB error: ' . $e->getMessage(), $config, 'error');
             json_error('Impossible d\'enregistrer la statistique.', 500);
         }
         json_response(['success' => true]);
@@ -289,7 +291,7 @@ switch ($route) {
             $stmt = $pdo->query('SELECT user,points,topups,referral_code,updated_at FROM loyalty ORDER BY updated_at DESC LIMIT 20');
             $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) {
-            error_log('[ARA Tech][api.php] Admin DB error: ' . $e->getMessage());
+            ara_log('api.php Admin DB error: ' . $e->getMessage(), $config, 'error');
             json_error('Impossible de charger les données d\'administration.', 500);
         }
         json_response(['success' => true, 'summary' => $summary, 'ads' => $ads, 'loyalty' => $users]);
@@ -308,7 +310,7 @@ switch ($route) {
             $pdo = ara_db($config);
             upsert_ad($pdo, $payload);
         } catch (Throwable $e) {
-            error_log('[ARA Tech][api.php] Admin save ad error: ' . $e->getMessage());
+            ara_log('api.php Admin save ad error: ' . $e->getMessage(), $config, 'error');
             json_error('Impossible d\'enregistrer l\'annonce.', 500);
         }
         json_response(['success' => true, 'id' => $payload['id']]);
@@ -325,7 +327,7 @@ switch ($route) {
             $pdo = ara_db($config);
             delete_ad($pdo, $id);
         } catch (Throwable $e) {
-            error_log('[ARA Tech][api.php] Admin delete ad error: ' . $e->getMessage());
+            ara_log('api.php Admin delete ad error: ' . $e->getMessage(), $config, 'error');
             json_error('Impossible de supprimer l\'annonce.', 500);
         }
         json_response(['success' => true]);
@@ -340,34 +342,49 @@ switch ($route) {
             $stmt = $pdo->query('SELECT * FROM ads');
             $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) {
-            error_log('[ARA Tech][api.php] Admin reseed ads error: ' . $e->getMessage());
+            ara_log('api.php Admin reseed ads error: ' . $e->getMessage(), $config, 'error');
             json_error('Impossible de recharger les annonces.', 500);
         }
         json_response(['success' => true, 'items' => active_items($items)]);
         break;
 
+    case 'expiry':
+        $user = trim((string)($_GET['user'] ?? ''));
+        if ($user === '') {
+            json_error('Paramètre user manquant.');
+        }
+        try {
+            // Connexion à RouterOS via la classe améliorée
+            $api = new RouterosAPI();
+            $api->timeout = $config['mikrotik']['connect_timeout'] ?? 10;
+            $api->attempts = $config['mikrotik']['connect_retries'] ?? 3;
+            $port = $config['mikrotik']['api_port'] ?? 8728;
+            $connected = $api->connect(
+                $config['mikrotik']['host'],
+                $config['mikrotik']['api_user'],
+                $config['mikrotik']['api_password'],
+                $port
+            );
+            if (!$connected) {
+                json_error('Connexion au routeur impossible.', 502);
+            }
+            $getUser = $api->comm('/ip/hotspot/user/print', ['?name' => $user]);
+            $api->disconnect();
+
+            $expiry = '';
+            if (isset($getUser[0]) && isset($getUser[0]['comment'])) {
+                $comment = $getUser[0]['comment'];
+                if (preg_match('/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/', $comment, $matches)) {
+                    $expiry = $matches[1];
+                }
+            }
+            json_response(['success' => true, 'expiry' => $expiry]);
+        } catch (Throwable $e) {
+            ara_log('api.php Expiry error: ' . $e->getMessage(), $config, 'error');
+            json_error('Erreur interne.', 500);
+        }
+        break;
+
     default:
         json_error('Route inconnue.', 404);
-}
-if ($_GET['route'] == 'expiry') {
-    $user = $_GET['user'];
-    // Connexion à RouterOS
-    $API = new RouterosAPI();
-    $API->connect($iphost, $userhost, decrypt($passwdhost));
-    
-    $getUser = $API->comm("/ip/hotspot/user/print", array(
-        "?name" => $user,
-    ));
-    
-    $expiry = '';
-    if (isset($getUser[0])) {
-        $comment = $getUser[0]['comment'];
-        // Extraire la date (supposée être après le préfixe "vc-" ou "up-")
-        if (preg_match('/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/', $comment, $matches)) {
-            $expiry = $matches[1];
-        }
-    }
-    header('Content-Type: application/json');
-    echo json_encode(['expiry' => $expiry]);
-    exit;
 }

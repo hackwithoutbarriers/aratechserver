@@ -28,9 +28,15 @@ class RouterosAPI
 
     /**
      * Établit la connexion et s'authentifie auprès du routeur.
+     * @param string $ip
+     * @param string $login
+     * @param string $password
+     * @param int $port
+     * @return bool
      */
-    public function connect(string $ip, string $login, string $password): bool
+    public function connect(string $ip, string $login, string $password, int $port = 8728): bool
     {
+        $this->port = $port;
         for ($attempt = 1; $attempt <= $this->attempts; $attempt++) {
             $this->connected = false;
             $this->socket = @fsockopen($ip, $this->port, $this->error_no, $this->error_str, $this->timeout);
@@ -84,6 +90,11 @@ class RouterosAPI
             fclose($this->socket);
         }
         $this->connected = false;
+    }
+
+    public function isConnected(): bool
+    {
+        return $this->connected && $this->socket !== null;
     }
 
     /**

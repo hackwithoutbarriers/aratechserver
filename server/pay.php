@@ -80,7 +80,7 @@ try {
         json_error('Une demande est déjà en cours pour ce numéro. Vérifiez votre téléphone.', 429);
     }
 } catch (Throwable $e) {
-    error_log('[ARA Tech][pay.php] DB error (check): ' . $e->getMessage());
+    ara_log('pay.php DB check error: ' . $e->getMessage(), $config, 'error');
     json_error('Erreur interne, réessayez dans un instant.', 500);
 }
 
@@ -103,21 +103,17 @@ try {
         ':created_at'   => date('c'),
     ]);
 } catch (Throwable $e) {
-    error_log('[ARA Tech][pay.php] DB error (insert): ' . $e->getMessage());
+    ara_log('pay.php DB insert error: ' . $e->getMessage(), $config, 'error');
     json_error('Erreur interne, réessayez dans un instant.', 500);
 }
 
 // ---------- Appel à l'API PayGate Global ----------
-// Champs basés sur l'intégration standard PayGate Global (phone_number,
-// amount, identifier, network, auth_token). Vérifiez les noms exacts des
-// champs dans le "Guide d'intégration" de votre tableau de bord PayGate
-// et ajustez si nécessaire — chaque compte marchand peut différer légèrement.
 $payload = [
     'auth_token'   => $config['paygate']['auth_token'],
     'phone_number' => '+' . $phoneIntl,
     'amount'       => $amount,
     'identifier'   => $identifier,
-    'network'      => $network,          // 'TMONEY' ou 'FLOOZ'
+    'network'      => $network,
     'description'  => 'ARA Tech Wi-Fi - ' . $package['label'],
     'callback_url' => $config['paygate']['callback_url'],
 ];
@@ -136,21 +132,17 @@ $curlErr  = curl_error($ch);
 curl_close($ch);
 
 if ($response === false) {
-    error_log('[ARA Tech][pay.php] cURL error: ' . $curlErr);
+    ara_log('pay.php cURL error: ' . $curlErr, $config, 'error');
     $pdo->prepare("UPDATE transactions SET status='failed', updated_at=:u WHERE identifier=:id")
         ->execute([':u' => date('c'), ':id' => $identifier]);
     json_error('Impossible de contacter la passerelle de paiement. Réessayez.', 502);
 }
 
 $result = json_decode($response, true);
-
-// Statuts d'INITIATION PayGate Global (à confirmer dans votre "guide d'intégration") :
-// 0 = transaction enregistrée avec succès, 2 = jeton invalide,
-// 4 = paramètres invalides, 6 = doublon détecté.
 $initiationOk = is_array($result) && isset($result['status']) && (string)$result['status'] === '0';
 
 if (!$initiationOk) {
-    error_log('[ARA Tech][pay.php] PayGate a rejeté la demande : ' . $response);
+    ara_log('pay.php PayGate rejection: ' . $response, $config, 'error');
     $pdo->prepare("UPDATE transactions SET status='failed', updated_at=:u WHERE identifier=:id")
         ->execute([':u' => date('c'), ':id' => $identifier]);
     json_error($result['message'] ?? "Le paiement n'a pas pu être initié. Vérifiez le numéro et réessayez.");
