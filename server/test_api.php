@@ -1,10 +1,8 @@
 <?php
-require __DIR__ . '/RouterosAPI.php';
-$config = require __DIR__ . '/config.php';
+require __DIR__ . '/server/RouterosAPI.php';
+$config = require __DIR__ . '/server/config.php';
 
 $api = new RouterosAPI();
-$api->debug = true; // active les logs pour voir ce qui se passe
-
 $connected = $api->connect(
     $config['mikrotik']['host'],
     $config['mikrotik']['api_user'],
@@ -13,15 +11,15 @@ $connected = $api->connect(
 );
 
 if ($connected) {
-    echo "✅ Connexion API réussie !\n";
+    echo "✅ Connexion API réussie !<br>";
     $profiles = $api->comm('/ip/hotspot/user/profile/print');
-    echo "Profils disponibles :\n";
+    echo "Profils disponibles :<br>";
     foreach ($profiles as $p) {
         if (isset($p['name'])) {
-            echo " - " . $p['name'] . "\n";
+            echo " - " . $p['name'] . "<br>";
         }
     }
     $api->disconnect();
 } else {
-    echo "❌ Échec de connexion. Vérifiez les identifiants, l'IP et le firewall.\n";
+    echo "❌ Échec de connexion. Vérifiez les identifiants, l'IP et le firewall.<br>";
 }
