@@ -19,7 +19,7 @@ return [
 
     // ================= MikroTik / Mikhmon =================
 'mikrotik' => [
-    'host'           => '192.168.1.0',      // L'IP réelle du routeur (à confirmer avec /ip address print)
+    'host'           => '192.168.1.64',      // L'IP réelle du routeur (à confirmer avec /ip address print)
     'api_user'       => 'api-hotspot',       // L'utilisateur créé
     'api_password'   => 'Dieu100%',          // Le mot de passe que vous avez défini
     'api_port'       => 8728,                // Port standard de l'API binaire
