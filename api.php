@@ -300,6 +300,43 @@ function require_sync_key(array $config): void
     }
 }
 
+/**
+ * Crée la table des logs routeur si elle n'existe pas.
+ * Chaque ligne = une entrée de log RouterOS (time, topics, message).
+ * UNIQUE(log_date, log_time, message) assure la déduplication automatique
+ * quand le routeur renvoie les mêmes entrées lors de plusieurs pushes consécutifs.
+ */
+function ensure_router_logs_table(PDO $pdo): void
+{
+    $pdo->exec("CREATE TABLE IF NOT EXISTS router_logs (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        log_date    TEXT    NOT NULL,
+        log_time    TEXT    NOT NULL,
+        topics      TEXT    NOT NULL DEFAULT '',
+        message     TEXT    NOT NULL,
+        received_at TEXT    NOT NULL,
+        UNIQUE(log_date, log_time, message)
+    )");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_router_logs_date ON router_logs(log_date)");
+}
+
+/**
+ * Normalise la date RouterOS (ex: "aug/06/2026") en ISO (ex: "2026-08-06").
+ * Retourne la date du jour si le format n'est pas reconnu.
+ */
+function normalize_router_date(string $raw): string
+{
+    $raw = trim($raw);
+    // Format RouterOS : aug/06/2026
+    if (preg_match('/^([a-z]{3})\/(\d{2})\/(\d{4})$/i', $raw)) {
+        $dt = DateTime::createFromFormat('M/d/Y', $raw);
+        if ($dt !== false) return $dt->format('Y-m-d');
+    }
+    // Déjà ISO
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) return $raw;
+    return date('Y-m-d');
+}
+
 // ================= ROUTES =================
 
 switch ($route) {
@@ -502,6 +539,97 @@ switch ($route) {
                 $message .= ' [debug] ' . $e->getMessage();
             }
             json_error($message, 500);
+        }
+        break;
+
+    case 'push-logs':
+        // Appelé UNIQUEMENT par le scheduler RouterOS — jamais par le navigateur.
+        // Corps : lignes texte tabulées (time\ttopics\tmessage\n), Content-Type: text/plain.
+        require_sync_key($config);
+
+        $date = normalize_router_date($_GET['date'] ?? '');
+        $body = file_get_contents('php://input');
+
+        if (trim($body) === '') {
+            json_error('Corps vide : aucun log à enregistrer.');
+        }
+
+        try {
+            $pdo = ara_db($config);
+            ensure_router_logs_table($pdo);
+
+            $stmt = $pdo->prepare(
+                'INSERT OR IGNORE INTO router_logs (log_date, log_time, topics, message, received_at)
+                 VALUES (:date, :time, :topics, :message, :received_at)'
+            );
+
+            $inserted = 0;
+            $skipped  = 0;
+            $now      = date('c');
+
+            foreach (explode("\n", $body) as $line) {
+                $line = trim($line);
+                if ($line === '') continue;
+
+                // Format attendu : HH:MM:SS\ttopics\tmessage
+                $parts = explode("\t", $line, 3);
+                if (count($parts) < 3) continue;
+
+                [$log_time, $topics, $message] = $parts;
+                $log_time = trim($log_time);
+                $topics   = trim($topics);
+                $message  = trim($message);
+
+                // Ignorer les entrées sans heure valide (sécurité)
+                if (!preg_match('/^\d{2}:\d{2}:\d{2}$/', $log_time)) continue;
+
+                $stmt->execute([
+                    ':date'        => $date,
+                    ':time'        => $log_time,
+                    ':topics'      => $topics,
+                    ':message'     => $message,
+                    ':received_at' => $now,
+                ]);
+                $stmt->rowCount() > 0 ? $inserted++ : $skipped++;
+            }
+
+            json_response(['success' => true, 'date' => $date, 'inserted' => $inserted, 'skipped' => $skipped]);
+        } catch (Throwable $e) {
+            ara_log('api.php Push-logs error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Erreur lors de l\'enregistrement des logs.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_error($msg, 500);
+        }
+        break;
+
+    case 'get-logs':
+        // Route admin : consulter les logs d'une journée.
+        // Usage : api.php?route=get-logs&token=ADMIN_TOKEN&date=2026-08-06&topic=hotspot
+        require_admin_token($config);
+
+        $date  = normalize_router_date($_GET['date'] ?? date('Y-m-d'));
+        $topic = trim($_GET['topic'] ?? '');
+
+        try {
+            $pdo = ara_db($config);
+            ensure_router_logs_table($pdo);
+
+            $sql    = 'SELECT log_time, topics, message FROM router_logs WHERE log_date = :date';
+            $params = [':date' => $date];
+            if ($topic !== '') {
+                $sql .= ' AND topics LIKE :topic';
+                $params[':topic'] = '%' . $topic . '%';
+            }
+            $sql .= ' ORDER BY log_time ASC';
+
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            json_response(['success' => true, 'date' => $date, 'count' => count($rows), 'logs' => $rows]);
+        } catch (Throwable $e) {
+            ara_log('api.php Get-logs error: ' . $e->getMessage(), $config, 'error');
+            json_error('Erreur lors de la récupération des logs.', 500);
         }
         break;
 
