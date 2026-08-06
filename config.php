@@ -40,6 +40,7 @@ return [
     // ================= Administration (pour gérer les annonces) =================
     'admin' => [
         // Token utilisé pour les routes admin (protégées par ?token=...)
+        // Nouvelle valeur : l'ancienne avait été partagée en clair dans le chat.
         'token' => 'c8739df7488d9dc34e31b4c103949f289bc69f9a571b96ee42543abbc265d8bc',
     ],
 
@@ -47,12 +48,12 @@ return [
     'db_path'  => __DIR__ . '/data/transactions.sqlite', // Base de données SQLite
     'log_path' => __DIR__ . '/data/app.log',            // Fichier de logs
 
-    // ================= CORS (pour autoriser le routeur à appeler l'API) =================
-    // Ne concerne que les appels faits par un navigateur (status.html) ;
-    // n'a aucun effet sur set-expiry, appelée par /tool fetch (pas un
-    // navigateur) — c'est pour ça que set-expiry est protégée par sync_key
-    // et non par cette valeur.
-    'allowed_origin' => 'http://10.10.0.1', // IP de la passerelle hotspot
+    // ================= CORS (pour autoriser le routeur/status.html à appeler l'API) =================
+    // '*' : la route expiry ne renvoie qu'une date (rien de sensible), et l'IP exacte
+    // de la passerelle hotspot peut varier selon le réseau/profil — plus fiable qu'une
+    // valeur figée qui casse silencieusement le fetch() côté navigateur si elle ne
+    // correspond pas exactement à l'origine réelle de status.html.
+    'allowed_origin' => '*',
 
     // ================= Debug (à désactiver en production) =================
     'debug' => false,
