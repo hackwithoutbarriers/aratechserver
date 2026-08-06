@@ -457,7 +457,11 @@ switch ($route) {
             ]);
         } catch (Throwable $e) {
             ara_log('api.php Set-expiry DB error: ' . $e->getMessage(), $config, 'error');
-            json_error('Impossible d\'enregistrer l\'expiration.', 500);
+            $message = 'Impossible d\'enregistrer l\'expiration.';
+            if (!empty($config['debug'])) {
+                $message .= ' [debug] ' . $e->getMessage();
+            }
+            json_error($message, 500);
         }
         json_response(['success' => true]);
         break;
@@ -489,20 +493,15 @@ switch ($route) {
                 break;
             }
 
-            // 3) Repli : ancienne colonne expiry sur la table loyalty
-            $stmt = $pdo->prepare('SELECT expiry FROM loyalty WHERE user = :user');
-            $stmt->execute([':user' => $user]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($row && $row['expiry']) {
-                json_response(['success' => true, 'expiry' => $row['expiry']]);
-                break;
-            }
-
-            // 4) Dernier recours : date générique (n'arrive que si aucune des 3 sources n'a répondu)
+            // 3) Dernier recours : date générique (n'arrive que si aucune des 2 sources n'a répondu)
             json_response(['success' => true, 'expiry' => date('Y-m-d H:i:s', strtotime('+24 hours'))]);
         } catch (Throwable $e) {
             ara_log('api.php Expiry error: ' . $e->getMessage(), $config, 'error');
-            json_error('Erreur lors de la récupération de l\'expiration.', 500);
+            $message = 'Erreur lors de la récupération de l\'expiration.';
+            if (!empty($config['debug'])) {
+                $message .= ' [debug] ' . $e->getMessage();
+            }
+            json_error($message, 500);
         }
         break;
 
