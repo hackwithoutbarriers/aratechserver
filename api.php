@@ -301,23 +301,114 @@ function require_sync_key(array $config): void
 }
 
 /**
- * Crée la table des logs routeur si elle n'existe pas.
- * Chaque ligne = une entrée de log RouterOS (time, topics, message).
- * UNIQUE(log_date, log_time, message) assure la déduplication automatique
- * quand le routeur renvoie les mêmes entrées lors de plusieurs pushes consécutifs.
+ * Envoie un lot de requêtes SQL vers Turso via son API HTTP pipeline.
+ * Chaque élément de $stmts : ['sql' => '...', 'args' => [...valeurs...]]
+ * Tous les args sont transmis comme TEXT (SQLite cast côté serveur si besoin).
+ * Retourne le tableau "results" brut de la réponse Turso.
  */
-function ensure_router_logs_table(PDO $pdo): void
+function turso_pipeline(array $config, array $stmts): array
 {
-    $pdo->exec("CREATE TABLE IF NOT EXISTS router_logs (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        log_date    TEXT    NOT NULL,
-        log_time    TEXT    NOT NULL,
-        topics      TEXT    NOT NULL DEFAULT '',
-        message     TEXT    NOT NULL,
-        received_at TEXT    NOT NULL,
-        UNIQUE(log_date, log_time, message)
-    )");
-    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_router_logs_date ON router_logs(log_date)");
+    if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
+        throw new RuntimeException('Turso non configuré : url ou token manquant dans config.php.');
+    }
+
+    $url   = rtrim($config['turso']['url'], '/') . '/v2/pipeline';
+    $token = $config['turso']['token'];
+
+    $requests = [];
+    foreach ($stmts as $stmt) {
+        $requests[] = [
+            'type' => 'execute',
+            'stmt' => [
+                'sql'  => $stmt['sql'],
+                'args' => array_map(
+                    static fn($v) => ['type' => 'text', 'value' => (string)$v],
+                    $stmt['args'] ?? []
+                ),
+            ],
+        ];
+    }
+    $requests[] = ['type' => 'close'];
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode(['requests' => $requests]),
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $token,
+        ],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+
+    $raw  = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err  = curl_error($ch);
+    curl_close($ch);
+
+    if ($raw === false) {
+        throw new RuntimeException("Turso injoignable (cURL: $err).");
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException("Réponse Turso invalide (HTTP $code).");
+    }
+
+    foreach ($decoded['results'] ?? [] as $result) {
+        if (($result['type'] ?? '') === 'error') {
+            throw new RuntimeException('Turso SQL: ' . ($result['error']['message'] ?? 'erreur inconnue'));
+        }
+    }
+
+    return $decoded['results'] ?? [];
+}
+
+/**
+ * Transforme un résultat Turso SELECT en tableau de tableaux associatifs.
+ * $result = un seul élément du tableau retourné par turso_pipeline().
+ */
+function turso_rows(array $result): array
+{
+    $response = $result['response']['result'] ?? [];
+    $cols     = array_column($response['cols'] ?? [], 'name');
+    $rows     = [];
+    foreach ($response['rows'] ?? [] as $row) {
+        $assoc = [];
+        foreach ($row as $i => $cell) {
+            $assoc[$cols[$i]] = $cell['value'] ?? null;
+        }
+        $rows[] = $assoc;
+    }
+    return $rows;
+}
+
+/**
+ * Crée la table router_logs dans Turso si elle n'existe pas.
+ * UNIQUE(log_date, log_time, message) = déduplication automatique
+ * quand plusieurs pushes horaires se chevauchent.
+ */
+function ensure_router_logs_table(array $config): void
+{
+    turso_pipeline($config, [
+        [
+            'sql'  => "CREATE TABLE IF NOT EXISTS router_logs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                log_date    TEXT NOT NULL,
+                log_time    TEXT NOT NULL,
+                topics      TEXT NOT NULL DEFAULT '',
+                message     TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                UNIQUE(log_date, log_time, message)
+            )",
+            'args' => [],
+        ],
+        [
+            'sql'  => 'CREATE INDEX IF NOT EXISTS idx_router_logs_date ON router_logs(log_date)',
+            'args' => [],
+        ],
+    ]);
 }
 
 /**
@@ -545,6 +636,7 @@ switch ($route) {
     case 'push-logs':
         // Appelé UNIQUEMENT par le scheduler RouterOS — jamais par le navigateur.
         // Corps : lignes texte tabulées (time\ttopics\tmessage\n), Content-Type: text/plain.
+        // Stockage persistant dans Turso (SQLite distribué), survivant aux redémarrages Render.
         require_sync_key($config);
 
         $date = normalize_router_date($_GET['date'] ?? '');
@@ -555,23 +647,18 @@ switch ($route) {
         }
 
         try {
-            $pdo = ara_db($config);
-            ensure_router_logs_table($pdo);
+            // Créer la table si besoin (idempotent)
+            ensure_router_logs_table($config);
 
-            $stmt = $pdo->prepare(
-                'INSERT OR IGNORE INTO router_logs (log_date, log_time, topics, message, received_at)
-                 VALUES (:date, :time, :topics, :message, :received_at)'
-            );
-
+            $now      = date('c');
             $inserted = 0;
             $skipped  = 0;
-            $now      = date('c');
+            $stmts    = [];
 
             foreach (explode("\n", $body) as $line) {
                 $line = trim($line);
                 if ($line === '') continue;
 
-                // Format attendu : HH:MM:SS\ttopics\tmessage
                 $parts = explode("\t", $line, 3);
                 if (count($parts) < 3) continue;
 
@@ -580,17 +667,22 @@ switch ($route) {
                 $topics   = trim($topics);
                 $message  = trim($message);
 
-                // Ignorer les entrées sans heure valide (sécurité)
                 if (!preg_match('/^\d{2}:\d{2}:\d{2}$/', $log_time)) continue;
 
-                $stmt->execute([
-                    ':date'        => $date,
-                    ':time'        => $log_time,
-                    ':topics'      => $topics,
-                    ':message'     => $message,
-                    ':received_at' => $now,
-                ]);
-                $stmt->rowCount() > 0 ? $inserted++ : $skipped++;
+                $stmts[] = [
+                    'sql'  => 'INSERT OR IGNORE INTO router_logs
+                               (log_date, log_time, topics, message, received_at)
+                               VALUES (?, ?, ?, ?, ?)',
+                    'args' => [$date, $log_time, $topics, $message, $now],
+                ];
+            }
+
+            if (!empty($stmts)) {
+                $results = turso_pipeline($config, $stmts);
+                foreach ($results as $r) {
+                    $affected = (int)($r['response']['result']['rows_affected'] ?? 0);
+                    $affected > 0 ? $inserted++ : $skipped++;
+                }
             }
 
             json_response(['success' => true, 'date' => $date, 'inserted' => $inserted, 'skipped' => $skipped]);
@@ -603,7 +695,7 @@ switch ($route) {
         break;
 
     case 'get-logs':
-        // Route admin : consulter les logs d'une journée.
+        // Route admin : consulter les logs d'une journée depuis Turso.
         // Usage : api.php?route=get-logs&token=ADMIN_TOKEN&date=2026-08-06&topic=hotspot
         require_admin_token($config);
 
@@ -611,25 +703,38 @@ switch ($route) {
         $topic = trim($_GET['topic'] ?? '');
 
         try {
-            $pdo = ara_db($config);
-            ensure_router_logs_table($pdo);
+            ensure_router_logs_table($config);
 
-            $sql    = 'SELECT log_time, topics, message FROM router_logs WHERE log_date = :date';
-            $params = [':date' => $date];
             if ($topic !== '') {
-                $sql .= ' AND topics LIKE :topic';
-                $params[':topic'] = '%' . $topic . '%';
+                $results = turso_pipeline($config, [[
+                    'sql'  => 'SELECT log_time, topics, message FROM router_logs
+                               WHERE log_date = ? AND topics LIKE ?
+                               ORDER BY log_time ASC',
+                    'args' => [$date, '%' . $topic . '%'],
+                ]]);
+            } else {
+                $results = turso_pipeline($config, [[
+                    'sql'  => 'SELECT log_time, topics, message FROM router_logs
+                               WHERE log_date = ?
+                               ORDER BY log_time ASC',
+                    'args' => [$date],
+                ]]);
             }
-            $sql .= ' ORDER BY log_time ASC';
 
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute($params);
-            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            // Le premier résultat = CREATE TABLE (ignoré), le suivant = SELECT
+            $selectResult = null;
+            foreach ($results as $r) {
+                $type = $r['response']['result']['cols'] ?? null;
+                if ($type !== null) { $selectResult = $r; break; }
+            }
+            $rows = $selectResult ? turso_rows($selectResult) : [];
 
             json_response(['success' => true, 'date' => $date, 'count' => count($rows), 'logs' => $rows]);
         } catch (Throwable $e) {
             ara_log('api.php Get-logs error: ' . $e->getMessage(), $config, 'error');
-            json_error('Erreur lors de la récupération des logs.', 500);
+            $msg = 'Erreur lors de la récupération des logs.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_error($msg, 500);
         }
         break;
 
