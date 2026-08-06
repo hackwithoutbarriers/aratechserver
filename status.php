@@ -9,19 +9,30 @@ $activeUsers = [];
 $error = '';
 
 try {
-    // Connect to the router (adjust parameters as needed – these are common defaults)
     $API = new RouterosAPI();
-    // Timeout 3 seconds so the page doesn't hang forever
-    $API->connect($config['router_ip'], $config['router_user'], $config['router_password'], 3);
-    
-    // Fetch system identity (for the router's name)
+    // Set a short timeout (seconds) – the API class uses $this->timeout
+    $API->timeout = 3;
+
+    // Connect using the nested mikrotik credentials
+    $connected = $API->connect(
+        $config['mikrotik']['host'],
+        $config['mikrotik']['api_user'],
+        $config['mikrotik']['api_password'],
+        (int)$config['mikrotik']['api_port']   // 4th param is port, not timeout
+    );
+
+    if (!$connected) {
+        throw new Exception('Could not connect to MikroTik API.');
+    }
+
+    // Fetch system identity
     $identity = $API->comm('/system/identity/print');
     $routerName = $identity[0]['name'] ?? 'MikroTik';
-    
+
     // Fetch active hotspot users
     $activeUsers = $API->comm('/ip/hotspot/active/print');
     $activeCount = count($activeUsers);
-    
+
     $status = 'online';
     $API->disconnect();
 } catch (Exception $e) {
@@ -46,16 +57,16 @@ try {
         .error { color: red; font-weight: bold; }
         .logout { float: right; }
     </style>
-    <meta http-equiv="refresh" content="30"> <!-- auto‑refresh every 30 seconds -->
+    <meta http-equiv="refresh" content="30">
 </head>
 <body>
     <a href="logout.php" class="logout">Logout</a>
     <h2>Hotspot Status</h2>
-    
+
     <?php if ($status === 'online'): ?>
         <p><span class="dot online"></span> Router <strong><?= htmlspecialchars($routerName) ?></strong> is online</p>
         <p>Active hotspot users: <strong><?= $activeCount ?></strong></p>
-        
+
         <?php if ($activeCount > 0): ?>
             <table>
                 <tr>
@@ -82,12 +93,12 @@ try {
         <?php else: ?>
             <p>No users connected right now.</p>
         <?php endif; ?>
-        
+
     <?php else: ?>
         <p><span class="dot offline"></span> Router offline or unreachable</p>
         <p class="error"><?= htmlspecialchars($error) ?></p>
     <?php endif; ?>
-    
+
     <p><small>Last updated: <?= date('Y-m-d H:i:s') ?> (auto‑refreshes every 30s)</small></p>
 </body>
 </html>
