@@ -28,6 +28,9 @@ return [
         'hotspot_server'  => 'all',                    // Nom du serveur hotspot ('all' ou nom exact)
         'connect_retries' => 1,                        // Réduit de 3 à 1 : ce repli échoue toujours depuis Render
         'connect_timeout' => 2,                         // Réduit de 10 à 2 : échoue vite plutôt que de bloquer ~30s
+        'router_ip'       => '192.168.88.1',   // your MikroTik IP
+        'router_user'     => 'admin',
+        'router_password' => '04011997',
     ],
 
     // ================= Hotspot (synchronisation date d'expiration) =================
