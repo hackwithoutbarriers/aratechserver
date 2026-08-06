@@ -62,8 +62,8 @@ return [
     //        (remplacer libsql:// par https://)
     // Token: depuis Turso → votre base → Tokens → "Create Token" (Read & Write)
     "turso" => [
-        "url"   => "https://VOTRE-DB-VOTRE-ORG.turso.io",  // à remplacer
-        "token" => "VOTRE_TOKEN_TURSO",                      // à remplacer
+        "url"   => "https://ara-tech-logs-hackwithoutbarriers.aws-us-east-1.turso.io",
+        "token" => "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODYwNTIyNTIsImlkIjoiMDE5ZmQ5MDEtMDIwMS03Mzc3LTllMzAtOTNjNDM0MTNmOWNmIiwia2lkIjoiU0FLQlFuMHY2NWprX3h3V0ZmRjBHYWk0LXFiQUprLVV0M0FKQlhBaEFpYyIsInJpZCI6IjJhYzkzZWEyLTM0NGQtNDRkNy05YzlmLTI2YTBlMDExZmI1MiJ9.gzggCfZ28-JXzNiXL7nE75H86CpIgoqOWiewnpPOBV_LCuBouNqkpksTrXT5XLsrq-ci_-YFGAjBuebnMFI3CA",
     ],
 
     // ================= Debug (à désactiver en production) =================
