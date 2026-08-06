@@ -1,0 +1,15 @@
+name: Keep Render App Awake
+
+on:
+  schedule:
+    # Runs every 10 minutes, every day
+    - cron: '*/10 * * * *'
+  # Allows you to manually trigger it from the GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Server
+        run: curl -s https://aratech-ldg0.onrender.com > /dev/null
