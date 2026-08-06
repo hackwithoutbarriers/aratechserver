@@ -28,9 +28,6 @@ return [
         'hotspot_server'  => 'all',                    // Nom du serveur hotspot ('all' ou nom exact)
         'connect_retries' => 1,                        // Réduit de 3 à 1 : ce repli échoue toujours depuis Render
         'connect_timeout' => 2,                         // Réduit de 10 à 2 : échoue vite plutôt que de bloquer ~30s
-        'router_ip'       => '192.168.88.1',   // your MikroTik IP
-        'router_user'     => 'admin',
-        'router_password' => '04011997',
     ],
 
     // ================= Hotspot (synchronisation date d'expiration) =================
@@ -51,14 +48,23 @@ return [
     'db_path'  => __DIR__ . '/data/transactions.sqlite', // Base de données SQLite
     'log_path' => __DIR__ . '/data/app.log',            // Fichier de logs
 
-    'admin_password' => 'Dieu100%',
-
     // ================= CORS (pour autoriser le routeur/status.html à appeler l'API) =================
     // '*' : la route expiry ne renvoie qu'une date (rien de sensible), et l'IP exacte
     // de la passerelle hotspot peut varier selon le réseau/profil — plus fiable qu'une
     // valeur figée qui casse silencieusement le fetch() côté navigateur si elle ne
     // correspond pas exactement à l'origine réelle de status.html.
     'allowed_origin' => '*',
+
+
+    // ================= Turso (logs persistants) =================
+    // Base SQLite distribuée — survit aux redémarrages Render.
+    // URL  : depuis le dashboard Turso → votre base → Overview → "URL"
+    //        (remplacer libsql:// par https://)
+    // Token: depuis Turso → votre base → Tokens → "Create Token" (Read & Write)
+    "turso" => [
+        "url"   => "https://VOTRE-DB-VOTRE-ORG.turso.io",  // à remplacer
+        "token" => "VOTRE_TOKEN_TURSO",                      // à remplacer
+    ],
 
     // ================= Debug (à désactiver en production) =================
     'debug' => false,
