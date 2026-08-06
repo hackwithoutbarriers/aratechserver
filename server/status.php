@@ -1,7 +1,6 @@
 <?php
 /**
- * status.php — Interrogé par login.html (polling) pour savoir si le
- * paiement a été confirmé et récupérer le ticket généré.
+ * status.php — Vérifie le statut d'une transaction
  */
 
 declare(strict_types=1);
@@ -47,8 +46,8 @@ if (!$row) {
 }
 
 echo json_encode([
-    'success'  => true,
-    'status'   => $row['status'], // pending | completed | failed
+    'success' => true,
+    'status' => $row['status'],
     'username' => $row['status'] === 'completed' ? $row['hotspot_username'] : null,
     'password' => $row['status'] === 'completed' ? $row['hotspot_password'] : null,
 ]);
