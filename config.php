@@ -48,6 +48,8 @@ return [
     'db_path'  => __DIR__ . '/data/transactions.sqlite', // Base de données SQLite
     'log_path' => __DIR__ . '/data/app.log',            // Fichier de logs
 
+    'admin_password' => 'Dieu100%',
+
     // ================= CORS (pour autoriser le routeur/status.html à appeler l'API) =================
     // '*' : la route expiry ne renvoie qu'une date (rien de sensible), et l'IP exacte
     // de la passerelle hotspot peut varier selon le réseau/profil — plus fiable qu'une
