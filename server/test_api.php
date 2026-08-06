@@ -2,7 +2,7 @@
 // server/test_api.php
 
 require __DIR__ . '/RouterosAPI.php';
-$config = require __DIR__ . '/config.php';
+$config = require __DIR__ . '/../config.php';   // remonter d'un niveau
 
 // Activer l'affichage des erreurs pour le diagnostic
 ini_set('display_errors', 1);
