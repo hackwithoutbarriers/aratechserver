@@ -60,109 +60,97 @@ $profileStatsMonth = $salesMonth ? ($salesMonth['profile_stats'] ?? []) : [];
 $stmt = $pdo->prepare("SELECT COUNT(DISTINCT id) FROM hotspot_snapshots WHERE snapshot_date = ?");
 $stmt->execute([$today]);
 $dailyRegistered = (int)$stmt->fetchColumn();
+
+// Titre de la page (utilisé par header.php)
+$pageTitle = 'Tableau de bord - ARA Tech WiFi';
+require __DIR__ . '/header.php';
 ?>
-<!DOCTYPE html>
-<html lang="fr">
-    <div class="container-fluid mt-4">
-        <h2 class="mb-4">Tableau de bord</h2>
 
-        <!-- Rangée 1 : Indicateurs financiers -->
-        <div class="row">
-            <div class="col-md-3">
-                <div class="card card-custom text-center p-3">
-                    <div class="stat-value"><?= number_format($caDay, 0, ',', ' ') ?> FCFA</div>
-                    <div class="stat-label">Chiffre d'affaires du jour</div>
-                    <div class="small-text text-muted"><?= $ticketsDay ?> ticket(s)</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card card-custom text-center p-3">
-                    <div class="stat-value"><?= number_format($caMonth, 0, ',', ' ') ?> FCFA</div>
-                    <div class="stat-label">Chiffre d'affaires du mois</div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card card-custom">
-                    <div class="card-header card-header-custom">Tickets vendus par profil (mois)</div>
-                    <div class="card-body p-0">
-                        <?php if (empty($profileStatsMonth)): ?>
-                            <p class="text-muted text-center my-3">Aucune vente enregistrée ce mois-ci.</p>
-                        <?php else: ?>
-                            <table class="table table-sm table-striped mb-0">
-                                <thead>
-                                    <tr><th>Profil</th><th>Vendus</th><th>CA</th></tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($profileStatsMonth as $p): ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($p['profile'] ?? 'Inconnu') ?></td>
-                                        <td><?= $p['nb'] ?? 0 ?></td>
-                                        <td><?= number_format((int)($p['ca'] ?? 0), 0, ',', ' ') ?> FCFA</td>
-                                    </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        <?php endif; ?>
-                    </div>
-                </div>
+<div class="container-fluid mt-4">
+    <h2 class="mb-4">Tableau de bord</h2>
+
+    <!-- Rangée 1 : Indicateurs financiers -->
+    <div class="row">
+        <div class="col-md-3">
+            <div class="card card-custom text-center p-3">
+                <div class="stat-value"><?= number_format($caDay, 0, ',', ' ') ?> FCFA</div>
+                <div class="stat-label">Chiffre d'affaires du jour</div>
+                <div class="small-text text-muted"><?= $ticketsDay ?> ticket(s)</div>
             </div>
         </div>
-
-        <!-- Rangée 2 : Suivi connexions et trafic -->
-        <div class="row mt-3">
-            <div class="col-md-4">
-                <div class="card card-custom text-center p-3">
-                    <div class="stat-value"><?= $activeUsers ?></div>
-                    <div class="stat-label">Sessions actives</div>
-                </div>
+        <div class="col-md-3">
+            <div class="card card-custom text-center p-3">
+                <div class="stat-value"><?= number_format($caMonth, 0, ',', ' ') ?> FCFA</div>
+                <div class="stat-label">Chiffre d'affaires du mois</div>
             </div>
-            <div class="col-md-4">
-                <div class="card card-custom text-center p-3">
-                    <div class="stat-value"><?= $dailyRegistered ?></div>
-                    <div class="stat-label">Snapshots reçus aujourd'hui</div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card card-custom text-center p-3">
-                    <div class="stat-value">
-                        <span class="status-dot <?= $routerOnline ? 'online' : 'offline' ?>"></span>
-                        <?= $routerOnline ? 'En ligne' : 'Hors ligne' ?>
-                    </div>
-                    <div class="stat-label">État du routeur</div>
-                    <?php if ($lastSnapshotTime): ?>
-                        <small class="text-muted">Dernier snapshot : <?= htmlspecialchars($lastSnapshotTime) ?></small>
+        </div>
+        <div class="col-md-6">
+            <div class="card card-custom">
+                <div class="card-header card-header-custom">Tickets vendus par profil (mois)</div>
+                <div class="card-body p-0">
+                    <?php if (empty($profileStatsMonth)): ?>
+                        <p class="text-muted text-center my-3">Aucune vente enregistrée ce mois-ci.</p>
+                    <?php else: ?>
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr><th>Profil</th><th>Vendus</th><th>CA</th></tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($profileStatsMonth as $p): ?>
+                                <tr>
+                                    <td><?= htmlspecialchars($p['profile'] ?? 'Inconnu') ?></td>
+                                    <td><?= $p['nb'] ?? 0 ?></td>
+                                    <td><?= number_format((int)($p['ca'] ?? 0), 0, ',', ' ') ?> FCFA</td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
                     <?php endif; ?>
-                </div>
-            </div>
-        </div>
-
-        <!-- Rangée 3 : Alertes système -->
-        <div class="row mt-3">
-            <div class="col-12">
-                <div class="card card-custom">
-                    <div class="card-header card-header-custom">Alertes système</div>
-                    <div class="card-body">
-                        <p class="text-muted mb-0">Aucune alerte pour le moment. Les notifications apparaîtront ici.</p>
-                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Gestion du bouton "retour en haut"
-        const backToTopBtn = document.getElementById('backToTop');
-        window.addEventListener('scroll', () => {
-            if (window.scrollY > 300) {
-                backToTopBtn.style.display = 'block';
-            } else {
-                backToTopBtn.style.display = 'none';
-            }
-        });
-        backToTopBtn.addEventListener('click', () => {
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-        });
-    </script>
+    <!-- Rangée 2 : Suivi connexions et trafic -->
+    <div class="row mt-3">
+        <div class="col-md-4">
+            <div class="card card-custom text-center p-3">
+                <div class="stat-value"><?= $activeUsers ?></div>
+                <div class="stat-label">Sessions actives</div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card card-custom text-center p-3">
+                <div class="stat-value"><?= $dailyRegistered ?></div>
+                <div class="stat-label">Snapshots reçus aujourd'hui</div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card card-custom text-center p-3">
+                <div class="stat-value">
+                    <span class="status-dot <?= $routerOnline ? 'online' : 'offline' ?>"></span>
+                    <?= $routerOnline ? 'En ligne' : 'Hors ligne' ?>
+                </div>
+                <div class="stat-label">État du routeur</div>
+                <?php if ($lastSnapshotTime): ?>
+                    <small class="text-muted">Dernier snapshot : <?= htmlspecialchars($lastSnapshotTime) ?></small>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rangée 3 : Alertes système -->
+    <div class="row mt-3">
+        <div class="col-12">
+            <div class="card card-custom">
+                <div class="card-header card-header-custom">Alertes système</div>
+                <div class="card-body">
+                    <p class="text-muted mb-0">Aucune alerte pour le moment. Les notifications apparaîtront ici.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 </body>
 </html>
