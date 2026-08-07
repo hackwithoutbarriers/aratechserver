@@ -832,6 +832,101 @@ switch ($route) {
             json_error('Erreur lors de l\'enregistrement de la vente.', 500);
         }
         break;
+
+        case 'get-sales':
+        require_admin_token($config);
+
+        $startDate = $_GET['start'] ?? date('Y-m-01'); // premier jour du mois
+        $endDate   = $_GET['end']   ?? date('Y-m-d');  // aujourd'hui
+
+        try {
+            // Créer la table si elle n'existe pas (sécurité)
+            turso_pipeline($config, [[
+                'sql' => 'CREATE TABLE IF NOT EXISTS sales_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_date TEXT NOT NULL,
+                    sale_time TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    amount INTEGER,
+                    ip TEXT,
+                    mac TEXT,
+                    profile TEXT,
+                    comment TEXT,
+                    received_at TEXT NOT NULL
+                )',
+                'args' => [],
+            ]]);
+
+            // 1. Chiffre d'affaires total sur la période
+            $caResults = turso_pipeline($config, [[
+                'sql'  => 'SELECT COALESCE(SUM(amount), 0) AS total_ca FROM sales_log WHERE sale_date BETWEEN ? AND ?',
+                'args' => [$startDate, $endDate],
+            ]]);
+            $caRow = null;
+            foreach ($caResults as $r) {
+                if (!empty($r['response']['result']['cols'])) {
+                    $rows = turso_rows($r);
+                    $caRow = $rows[0] ?? null;
+                    break;
+                }
+            }
+            $totalCA = $caRow['total_ca'] ?? 0;
+
+            // 2. Nombre total de tickets vendus
+            $countResults = turso_pipeline($config, [[
+                'sql'  => 'SELECT COUNT(*) AS total_tickets FROM sales_log WHERE sale_date BETWEEN ? AND ?',
+                'args' => [$startDate, $endDate],
+            ]]);
+            $countRow = null;
+            foreach ($countResults as $r) {
+                if (!empty($r['response']['result']['cols'])) {
+                    $rows = turso_rows($r);
+                    $countRow = $rows[0] ?? null;
+                    break;
+                }
+            }
+            $totalTickets = $countRow['total_tickets'] ?? 0;
+
+            // 3. Répartition par profil (montant total et nombre)
+            $profileResults = turso_pipeline($config, [[
+                'sql'  => 'SELECT profile, COUNT(*) AS nb, COALESCE(SUM(amount),0) AS ca FROM sales_log WHERE sale_date BETWEEN ? AND ? GROUP BY profile ORDER BY ca DESC',
+                'args' => [$startDate, $endDate],
+            ]]);
+            $profileStats = [];
+            foreach ($profileResults as $r) {
+                if (!empty($r['response']['result']['cols'])) {
+                    $profileStats = turso_rows($r);
+                    break;
+                }
+            }
+
+            // 4. Détail des ventes (limité à 200 pour rester léger)
+            $detailResults = turso_pipeline($config, [[
+                'sql'  => 'SELECT sale_date, sale_time, username, profile, amount FROM sales_log WHERE sale_date BETWEEN ? AND ? ORDER BY sale_date DESC, sale_time DESC LIMIT 200',
+                'args' => [$startDate, $endDate],
+            ]]);
+            $details = [];
+            foreach ($detailResults as $r) {
+                if (!empty($r['response']['result']['cols'])) {
+                    $details = turso_rows($r);
+                    break;
+                }
+            }
+
+            json_response([
+                'success'       => true,
+                'total_ca'      => (int)$totalCA,
+                'total_tickets' => (int)$totalTickets,
+                'profile_stats' => $profileStats,
+                'sales'         => $details,
+            ]);
+        } catch (Throwable $e) {
+            ara_log('api.php Get-sales error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Erreur lors de la récupération des ventes.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_error($msg, 500);
+        }
+        break;
     
     default:
         json_error('Route inconnue.', 404);
