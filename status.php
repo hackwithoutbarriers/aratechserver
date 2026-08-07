@@ -90,22 +90,17 @@ $lastTime    = '';
 $error       = '';
 
 try {
-    // Get today's date for querying the snapshot (UTC)
-    $today = date('Y-m-d');
-
-    // Fetch the latest snapshot pushed by the router
+    // DEBUG : fetch latest snapshot without date filter
     $results = turso_pipeline($config, [
         [
-            'sql'  => 'SELECT active_count, users_blob, snapshot_time
+            'sql'  => 'SELECT active_count, users_blob, snapshot_date, snapshot_time
                        FROM hotspot_snapshots
-                       WHERE snapshot_date = ?
-                       ORDER BY snapshot_time DESC
+                       ORDER BY id DESC
                        LIMIT 1',
-            'args' => [$today],
+            'args' => [],
         ]
     ]);
 
-    // Find the SELECT result (the one that has column definitions)
     $snapshotRow = null;
     foreach ($results as $r) {
         if (isset($r['response']['result']['cols'])) {
@@ -120,23 +115,8 @@ try {
     if ($snapshotRow) {
         $activeCount = (int)$snapshotRow['active_count'];
         $usersBlob   = $snapshotRow['users_blob'] ?? '';
-        $lastTime    = $snapshotRow['snapshot_time'] ?? '';
-
-        // Parse the blob: "user,mac,ip||user2,mac2,ip2||..."
-        if ($usersBlob !== '') {
-            foreach (explode('||', $usersBlob) as $chunk) {
-                $chunk = trim($chunk);
-                if ($chunk === '') continue;
-                $parts = explode(',', $chunk, 3);
-                if (count($parts) === 3) {
-                    $users[] = [
-                        'user' => $parts[0],
-                        'mac'  => $parts[1],
-                        'ip'   => $parts[2],
-                    ];
-                }
-            }
-        }
+        $lastTime    = ($snapshotRow['snapshot_date'] ?? '') . ' ' . ($snapshotRow['snapshot_time'] ?? '');
+        // parse users…
     }
 } catch (Throwable $e) {
     $error = $e->getMessage();
