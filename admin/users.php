@@ -44,24 +44,13 @@ if ($snapshot && !empty($snapshot['users_blob'])) {
 ?>
 <!DOCTYPE html>
 <html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Utilisateurs - ARA Tech WiFi</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
-    <style>
-        :root { --bleu-nuit: #0b2c82; --orange: #f5a623; }
-        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; }
-        .navbar-custom { background: var(--bleu-nuit); }
-        .navbar-brand { font-weight: 700; font-size: 1.3rem; color: #fff !important; }
-        .card-custom { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-        .online-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #28a745; margin-right: 4px; }
-        .offline-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #dc3545; margin-right: 4px; }
-        .btn-orange { background: var(--orange); border: none; color: #fff; font-weight: 600; border-radius: 8px; }
-        .btn-orange:hover { background: #e5941f; color: #fff; }
-    </style>
-</head>
+<?php
+declare(strict_types=1);
+require __DIR__ . '/auth.php';
+require_once __DIR__ . '/../db.php';
+$config = require __DIR__ . '/../config.php';
+$pageTitle = 'Utilisateurs - ARA Tech WiFi';
+require __DIR__ . '/header.php';
 <body>
     <nav class="navbar navbar-custom navbar-dark px-3">
         <a href="index.php" class="navbar-brand">⚡ ARA Tech WiFi Admin</a>
