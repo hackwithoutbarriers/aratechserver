@@ -49,6 +49,16 @@ function ara_db(array $config): PDO
         updated_at        TEXT
     )");
 
+        // Table de fidélité (loyalty)
+    $pdo->exec("CREATE TABLE IF NOT EXISTS loyalty (
+        user          TEXT PRIMARY KEY,
+        points        INTEGER NOT NULL DEFAULT 0,
+        topups        INTEGER NOT NULL DEFAULT 0,
+        referral_code TEXT,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT
+    )");
+    
     return $pdo;
 }
 
