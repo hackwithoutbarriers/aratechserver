@@ -1,9 +1,7 @@
 <?php
 declare(strict_types=1);
-require __DIR__ . '/config.php';
 $config = require __DIR__ . '/config.php';
 
-// Fonctions Turso (copiées de api.php – identiques)
 function turso_pipeline(array $config, array $stmts): array {
     if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
         throw new RuntimeException('Turso non configuré.');
@@ -13,8 +11,8 @@ function turso_pipeline(array $config, array $stmts): array {
     $requests = [];
     foreach ($stmts as $stmt) {
         $requests[] = [
-            'type' => 'execute',
-            'stmt' => [
+            'type'  => 'execute',
+            'stmt'  => [
                 'sql'  => $stmt['sql'],
                 'args' => array_map(fn($v) => ['type' => 'text', 'value' => (string)$v], $stmt['args'] ?? []),
             ],
@@ -57,52 +55,72 @@ function turso_rows(array $result): array {
     return $rows;
 }
 
-// -------------------- ACTION --------------------
 $message = '';
+$latest = null;
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Insérer un snapshot de test
+    // Écrire un snapshot ET le relire immédiatement dans le même pipeline
     try {
-        turso_pipeline($config, [[
-            'sql' => 'CREATE TABLE IF NOT EXISTS hotspot_snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                snapshot_date TEXT NOT NULL,
-                snapshot_time TEXT NOT NULL,
-                active_count INTEGER NOT NULL,
-                users_blob TEXT,
-                received_at TEXT NOT NULL
-            )',
-            'args' => [],
-        ]]);
         $date = date('Y-m-d');
         $time = date('H:i:s');
-        $active = 3; // valeur de test
+        $active = 3;
         $users = 'test1,AA:BB:CC:DD:EE:FF,10.0.0.1||test2,11:22:33:44:55:66,10.0.0.2||';
-        turso_pipeline($config, [[
-            'sql' => 'INSERT INTO hotspot_snapshots (snapshot_date, snapshot_time, active_count, users_blob, received_at)
-                     VALUES (?, ?, ?, ?, ?)',
-            'args' => [$date, $time, $active, $users, date('c')],
-        ]]);
-        $message = "Snapshot de test inséré ($active utilisateurs).";
+
+        $results = turso_pipeline($config, [
+            // 1. Créer la table si elle n'existe pas
+            [
+                'sql'  => 'CREATE TABLE IF NOT EXISTS hotspot_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_date TEXT NOT NULL,
+                    snapshot_time TEXT NOT NULL,
+                    active_count INTEGER NOT NULL,
+                    users_blob TEXT,
+                    received_at TEXT NOT NULL
+                )',
+                'args' => [],
+            ],
+            // 2. Insérer
+            [
+                'sql'  => 'INSERT INTO hotspot_snapshots (snapshot_date, snapshot_time, active_count, users_blob, received_at)
+                         VALUES (?, ?, ?, ?, ?)',
+                'args' => [$date, $time, $active, $users, date('c')],
+            ],
+            // 3. Relire le dernier (celui qu'on vient d'insérer)
+            [
+                'sql'  => 'SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
+                'args' => [],
+            ],
+        ]);
+
+        // Récupérer le résultat du SELECT (le dernier avec 'cols')
+        foreach ($results as $r) {
+            if (isset($r['response']['result']['cols'])) {
+                $rows = turso_rows($r);
+                if (!empty($rows)) $latest = $rows[0];
+            }
+        }
+        $message = $latest ? "Snapshot de test inséré et relu avec succès." : "Insertion OK mais le SELECT n'a rien retourné.";
     } catch (Throwable $e) {
         $message = 'ERREUR : ' . $e->getMessage();
     }
-}
-
-// Lire le dernier snapshot
-$latest = null;
-try {
-    $results = turso_pipeline($config, [[
-        'sql' => 'SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
-        'args' => [],
-    ]]);
-    foreach ($results as $r) {
-        if (isset($r['response']['result']['cols'])) {
-            $rows = turso_rows($r);
-            if (!empty($rows)) $latest = $rows[0];
+} else {
+    // Affichage simple (GET) : juste relire le dernier snapshot
+    try {
+        $results = turso_pipeline($config, [
+            [
+                'sql'  => 'SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
+                'args' => [],
+            ],
+        ]);
+        foreach ($results as $r) {
+            if (isset($r['response']['result']['cols'])) {
+                $rows = turso_rows($r);
+                if (!empty($rows)) $latest = $rows[0];
+            }
         }
+    } catch (Throwable $e) {
+        $message = 'ERREUR lecture : ' . $e->getMessage();
     }
-} catch (Throwable $e) {
-    $message = 'ERREUR lors de la lecture : ' . $e->getMessage();
 }
 ?>
 <!DOCTYPE html>
