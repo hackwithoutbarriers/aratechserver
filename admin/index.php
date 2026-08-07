@@ -4,9 +4,7 @@ require __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
 $config = require __DIR__ . '/../config.php';
 
-// ------ Connexion et création de la table si nécessaire ------
 $pdo = ara_db($config);
-
 $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     snapshot_date TEXT NOT NULL,
@@ -16,19 +14,13 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
     received_at TEXT NOT NULL
 )");
 
-// 1. Dernier snapshot (sessions actives)
+// --- Sessions actives ---
 $stmt = $pdo->query("SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1");
 $snapshot = $stmt->fetch(PDO::FETCH_ASSOC);
 $activeUsers = $snapshot ? (int)$snapshot['active_count'] : 0;
 $lastSnapshotTime = $snapshot ? ($snapshot['snapshot_date'] . ' ' . $snapshot['snapshot_time']) : null;
 
-// 2. Utilisateurs enregistrés aujourd'hui (nombre de snapshots distincts de la journée)
-$today = date('Y-m-d');
-$stmt = $pdo->prepare("SELECT COUNT(DISTINCT id) FROM hotspot_snapshots WHERE snapshot_date = ?");
-$stmt->execute([$today]);
-$dailyRegistered = (int)$stmt->fetchColumn();
-
-// 3. État du routeur : vert si dernier snapshot < 6 minutes
+// --- État du routeur ---
 $routerOnline = false;
 if ($lastSnapshotTime) {
     $last = DateTime::createFromFormat('Y-m-d H:i:s', $lastSnapshotTime, new DateTimeZone('UTC'));
@@ -38,14 +30,40 @@ if ($lastSnapshotTime) {
     }
 }
 
-// 4. Indicateurs financiers (en attente de l'intégration des ventes Turso)
-$caDay = 0;
-$caMonth = 0;
+// --- Indicateurs de ventes (via API interne) ---
+$adminToken = $config['admin']['token'] ?? getenv('ADMIN_TOKEN');
+$apiBase = 'https://' . $_SERVER['HTTP_HOST'] . '/api.php';
 
-// 5. Tickets par profil (placeholder)
-$profiles = ['10H', '24H', 'Week', 'Month', 'Abonnement'];
-$profileStats = array_fill_keys($profiles, ['remaining' => 0, 'sold' => 0]);
+// Fonction pour récupérer les données de vente sur une période
+function fetchSalesData(string $apiBase, string $token, string $start, string $end): ?array {
+    $url = $apiBase . '?route=get-sales&token=' . urlencode($token) . '&start=' . urlencode($start) . '&end=' . urlencode($end);
+    try {
+        $response = file_get_contents($url);
+        $data = json_decode($response, true);
+        if ($data && ($data['success'] ?? false)) {
+            return $data;
+        }
+    } catch (Throwable $e) {}
+    return null;
+}
 
+// Ventes du jour
+$today = date('Y-m-d');
+$salesDay = fetchSalesData($apiBase, $adminToken, $today, $today);
+$caDay = $salesDay ? (int)$salesDay['total_ca'] : 0;
+$ticketsDay = $salesDay ? (int)$salesDay['total_tickets'] : 0;
+
+// Ventes du mois
+$monthStart = date('Y-m-01');
+$monthEnd = date('Y-m-d');
+$salesMonth = fetchSalesData($apiBase, $adminToken, $monthStart, $monthEnd);
+$caMonth = $salesMonth ? (int)$salesMonth['total_ca'] : 0;
+$profileStatsMonth = $salesMonth ? ($salesMonth['profile_stats'] ?? []) : [];
+
+// Utilisateurs enregistrés aujourd'hui (snapshots distincts)
+$stmt = $pdo->prepare("SELECT COUNT(DISTINCT id) FROM hotspot_snapshots WHERE snapshot_date = ?");
+$stmt->execute([$today]);
+$dailyRegistered = (int)$stmt->fetchColumn();
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -56,76 +74,25 @@ $profileStats = array_fill_keys($profiles, ['remaining' => 0, 'sold' => 0]);
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
     <style>
-        :root {
-            --bleu-nuit: #0b2c82;
-            --orange: #f5a623;
-        }
-        body {
-            background: #f4f6f9;
-            font-family: 'Segoe UI', sans-serif;
-        }
-        .navbar-custom {
-            background: var(--bleu-nuit);
-        }
-        .navbar-brand {
-            font-weight: 700;
-            font-size: 1.3rem;
-            color: #fff !important;
-        }
-        .card-custom {
-            border: none;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            margin-bottom: 1.5rem;
-        }
-        .card-header-custom {
-            background: var(--bleu-nuit);
-            color: #fff;
-            border-radius: 12px 12px 0 0 !important;
-            font-weight: 600;
-        }
-        .stat-value {
-            font-size: 2.2rem;
-            font-weight: 700;
-            color: var(--bleu-nuit);
-        }
-        .stat-label {
-            font-size: 0.9rem;
-            color: #6c757d;
-        }
-        .btn-orange {
-            background: var(--orange);
-            border: none;
-            color: #fff;
-            font-weight: 600;
-            border-radius: 8px;
-            transition: background 0.2s;
-        }
-        .btn-orange:hover {
-            background: #e5941f;
-            color: #fff;
-        }
-        .status-dot {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 6px;
-        }
+        :root { --bleu-nuit: #0b2c82; --orange: #f5a623; }
+        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; }
+        .navbar-custom { background: var(--bleu-nuit); }
+        .navbar-brand { font-weight: 700; font-size: 1.3rem; color: #fff !important; }
+        .card-custom { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 1.5rem; }
+        .card-header-custom { background: var(--bleu-nuit); color: #fff; border-radius: 12px 12px 0 0 !important; font-weight: 600; }
+        .stat-value { font-size: 2rem; font-weight: 700; color: var(--bleu-nuit); }
+        .stat-label { font-size: 0.9rem; color: #6c757d; }
+        .btn-orange { background: var(--orange); border: none; color: #fff; font-weight: 600; border-radius: 8px; }
+        .btn-orange:hover { background: #e5941f; color: #fff; }
+        .status-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; }
         .online { background: #28a745; }
         .offline { background: #dc3545; }
-        .quick-link {
-            text-decoration: none;
-            color: var(--bleu-nuit);
-            font-weight: 500;
-        }
-        .quick-link i {
-            color: var(--orange);
-        }
+        .quick-link { text-decoration: none; color: var(--bleu-nuit); font-weight: 500; }
+        .quick-link i { color: var(--orange); }
+        .small-text { font-size: 0.8rem; }
     </style>
 </head>
 <body>
-    <!-- Barre de navigation -->
     <nav class="navbar navbar-custom navbar-dark px-3">
         <span class="navbar-brand">⚡ ARA Tech WiFi Admin</span>
         <div class="ms-auto">
@@ -142,39 +109,37 @@ $profileStats = array_fill_keys($profiles, ['remaining' => 0, 'sold' => 0]);
                 <div class="card card-custom text-center p-3">
                     <div class="stat-value"><?= number_format($caDay, 0, ',', ' ') ?> FCFA</div>
                     <div class="stat-label">Chiffre d'affaires du jour</div>
-                    <small class="text-muted">En construction</small>
+                    <div class="small-text text-muted"><?= $ticketsDay ?> ticket(s)</div>
                 </div>
             </div>
             <div class="col-md-3">
                 <div class="card card-custom text-center p-3">
                     <div class="stat-value"><?= number_format($caMonth, 0, ',', ' ') ?> FCFA</div>
                     <div class="stat-label">Chiffre d'affaires du mois</div>
-                    <small class="text-muted">En construction</small>
                 </div>
             </div>
             <div class="col-md-6">
                 <div class="card card-custom">
-                    <div class="card-header card-header-custom">Tickets vendus / restants par profil</div>
-                    <div class="card-body p-2">
-                        <table class="table table-sm mb-0">
-                            <thead>
-                                <tr>
-                                    <th>Profil</th>
-                                    <th>Vendus</th>
-                                    <th>Restants</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($profiles as $p): ?>
-                                <tr>
-                                    <td><?= $p ?></td>
-                                    <td><?= $profileStats[$p]['sold'] ?></td>
-                                    <td><?= $profileStats[$p]['remaining'] ?></td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                        <small class="text-muted ms-2">Les données détaillées seront disponibles prochainement.</small>
+                    <div class="card-header card-header-custom">Tickets vendus par profil (mois)</div>
+                    <div class="card-body p-0">
+                        <?php if (empty($profileStatsMonth)): ?>
+                            <p class="text-muted text-center my-3">Aucune vente enregistrée ce mois-ci.</p>
+                        <?php else: ?>
+                            <table class="table table-sm table-striped mb-0">
+                                <thead>
+                                    <tr><th>Profil</th><th>Vendus</th><th>CA</th></tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($profileStatsMonth as $p): ?>
+                                    <tr>
+                                        <td><?= htmlspecialchars($p['profile'] ?? 'Inconnu') ?></td>
+                                        <td><?= $p['nb'] ?? 0 ?></td>
+                                        <td><?= number_format((int)($p['ca'] ?? 0), 0, ',', ' ') ?> FCFA</td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
@@ -191,7 +156,7 @@ $profileStats = array_fill_keys($profiles, ['remaining' => 0, 'sold' => 0]);
             <div class="col-md-4">
                 <div class="card card-custom text-center p-3">
                     <div class="stat-value"><?= $dailyRegistered ?></div>
-                    <div class="stat-label">Utilisateurs enregistrés aujourd'hui</div>
+                    <div class="stat-label">Snapshots reçus aujourd'hui</div>
                 </div>
             </div>
             <div class="col-md-4">
@@ -214,7 +179,7 @@ $profileStats = array_fill_keys($profiles, ['remaining' => 0, 'sold' => 0]);
                 <div class="card card-custom">
                     <div class="card-header card-header-custom">Alertes système</div>
                     <div class="card-body">
-                        <p class="text-muted mb-0">Aucune alerte pour le moment. Les notifications (redémarrages, pannes) apparaîtront ici.</p>
+                        <p class="text-muted mb-0">Aucune alerte pour le moment. Les notifications apparaîtront ici.</p>
                     </div>
                 </div>
             </div>
