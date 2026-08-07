@@ -3,6 +3,9 @@ declare(strict_types=1);
 require __DIR__ . '/auth.php';
 $config = require __DIR__ . '/../config.php';
 
+// Titre de la page (utilisé par header.php)
+$pageTitle = 'Logs - ARA Tech WiFi';
+
 // Récupération du token admin
 $adminToken = $config['admin']['token'] ?? getenv('ADMIN_TOKEN');
 
@@ -33,86 +36,72 @@ try {
 } catch (Throwable $e) {
     $error = 'Impossible de contacter l\'API : ' . $e->getMessage();
 }
-?>
-<!DOCTYPE html>
-<html lang="fr">
-<?php
-declare(strict_types=1);
-require __DIR__ . '/auth.php';
-$config = require __DIR__ . '/../config.php';
-$pageTitle = 'Logs - ARA Tech WiFi';
+
+// Inclusion du header commun (ouvre <html>, <head>, <body>, navbar, bouton retour haut)
 require __DIR__ . '/header.php';
-<body>
-    <!-- Barre de navigation -->
-    <nav class="navbar navbar-custom navbar-dark px-3">
-        <a href="index.php" class="navbar-brand">⚡ ARA Tech WiFi Admin</a>
-        <div class="ms-auto">
-            <a href="logout.php" class="btn btn-outline-light btn-sm">Déconnexion</a>
-        </div>
-    </nav>
+?>
 
-    <div class="container-fluid mt-4">
-        <h2 class="mb-3">📋 Consultation des logs système</h2>
+<div class="container-fluid mt-4">
+    <h2 class="mb-3">📋 Consultation des logs système</h2>
 
-        <!-- Section filtre -->
-        <div class="filter-section">
-            <form method="get" class="row g-2 align-items-end">
-                <div class="col-md-3">
-                    <label for="date" class="form-label">Date</label>
-                    <input type="date" class="form-control" id="date" name="date" value="<?= htmlspecialchars($date) ?>">
-                </div>
-                <div class="col-md-3">
-                    <label for="topic" class="form-label">Topic (mot-clé)</label>
-                    <input type="text" class="form-control" id="topic" name="topic" placeholder="ex: hotspot" value="<?= htmlspecialchars($topic) ?>">
-                </div>
-                <div class="col-md-2">
-                    <button type="submit" class="btn btn-orange w-100">Filtrer</button>
-                </div>
-                <div class="col-md-4 text-end">
-                    <span class="text-muted"><?= $count ?> entrée(s) trouvée(s)</span>
-                </div>
-            </form>
-        </div>
-
-        <!-- Affichage des logs -->
-        <?php if ($error): ?>
-            <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
-        <?php elseif (empty($logs)): ?>
-            <div class="alert alert-info">Aucun log trouvé pour cette période / ce filtre.</div>
-        <?php else: ?>
-            <div class="card card-custom">
-                <div class="card-header card-header-custom">
-                    Logs du <?= htmlspecialchars($date) ?>
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive">
-                        <table class="table table-logs table-striped mb-0">
-                            <thead>
-                                <tr>
-                                    <th>Heure</th>
-                                    <th>Topics</th>
-                                    <th>Message</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($logs as $log): ?>
-                                <tr>
-                                    <td><?= htmlspecialchars($log['log_time'] ?? '') ?></td>
-                                    <td><?= htmlspecialchars($log['topics'] ?? '') ?></td>
-                                    <td><?= htmlspecialchars($log['message'] ?? '') ?></td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+    <!-- Section filtre -->
+    <div class="filter-section">
+        <form method="get" class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label for="date" class="form-label">Date</label>
+                <input type="date" class="form-control" id="date" name="date" value="<?= htmlspecialchars($date) ?>">
             </div>
-        <?php endif; ?>
-
-        <!-- Bouton retour -->
-        <a href="index.php" class="btn btn-outline-secondary mt-3"><i class="bi bi-arrow-left"></i> Retour au tableau de bord</a>
+            <div class="col-md-3">
+                <label for="topic" class="form-label">Topic (mot-clé)</label>
+                <input type="text" class="form-control" id="topic" name="topic" placeholder="ex: hotspot" value="<?= htmlspecialchars($topic) ?>">
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-orange w-100">Filtrer</button>
+            </div>
+            <div class="col-md-4 text-end">
+                <span class="text-muted"><?= $count ?> entrée(s) trouvée(s)</span>
+            </div>
+        </form>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Affichage des logs -->
+    <?php if ($error): ?>
+        <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
+    <?php elseif (empty($logs)): ?>
+        <div class="alert alert-info">Aucun log trouvé pour cette période / ce filtre.</div>
+    <?php else: ?>
+        <div class="card card-custom">
+            <div class="card-header card-header-custom">
+                Logs du <?= htmlspecialchars($date) ?>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-logs table-striped mb-0">
+                        <thead>
+                            <tr>
+                                <th>Heure</th>
+                                <th>Topics</th>
+                                <th>Message</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($logs as $log): ?>
+                            <tr>
+                                <td><?= htmlspecialchars($log['log_time'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($log['topics'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($log['message'] ?? '') ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <!-- Bouton retour -->
+    <a href="index.php" class="btn btn-outline-secondary mt-3"><i class="bi bi-arrow-left"></i> Retour au tableau de bord</a>
+</div>
+
 </body>
 </html>
