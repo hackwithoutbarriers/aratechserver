@@ -3,7 +3,6 @@ declare(strict_types=1);
 require __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
 $config = require __DIR__ . '/../config.php';
-require_once __DIR__ . '/lib_turso.php';   // indispensable
 
 $pdo = ara_db($config);
 $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
