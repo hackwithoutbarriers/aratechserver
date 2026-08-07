@@ -1,14 +1,13 @@
 <?php
 declare(strict_types=1);
-require __DIR__ . '/admin/auth.php';   // garde la protection par mot de passe
-require_once __DIR__ . '/db.php';
-$config = require __DIR__ . '/config.php';
+require __DIR__ . '/auth.php';   // plus besoin de ../admin/
+require_once __DIR__ . '/../db.php';
+$config = require __DIR__ . '/../config.php';
 
 $pageTitle = 'Statut Hotspot - ARA Tech WiFi';
 
 $pdo = ara_db($config);
 
-// Créer la table si elle n'existe pas
 $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     snapshot_date TEXT NOT NULL,
@@ -18,7 +17,6 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
     received_at TEXT NOT NULL
 )");
 
-// Dernier snapshot
 $stmt = $pdo->query("SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1");
 $snapshot = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -27,7 +25,6 @@ $usersBlob   = $snapshot ? ($snapshot['users_blob'] ?? '') : '';
 $lastDate    = $snapshot ? ($snapshot['snapshot_date'] ?? '') : '';
 $lastTime    = $snapshot ? ($snapshot['snapshot_time'] ?? '') : '';
 
-// Déterminer l'état du routeur (en ligne si le snapshot date de moins de 6 minutes)
 $routerOnline = false;
 if ($snapshot) {
     $last = DateTime::createFromFormat('Y-m-d H:i:s', $lastDate . ' ' . $lastTime, new DateTimeZone('UTC'));
@@ -37,7 +34,6 @@ if ($snapshot) {
     }
 }
 
-// Parser la liste des utilisateurs (format : user,mac,ip||user2,mac2,ip2||...)
 $users = [];
 if ($usersBlob !== '') {
     foreach (explode('||', $usersBlob) as $chunk) {
@@ -50,13 +46,12 @@ if ($usersBlob !== '') {
     }
 }
 
-require __DIR__ . '/admin/header.php';
+require __DIR__ . '/header.php';
 ?>
 
 <div class="container-fluid mt-4">
     <h2 class="mb-4">📡 Statut du Hotspot</h2>
 
-    <!-- Carte d'état général -->
     <div class="row">
         <div class="col-md-6">
             <div class="card card-custom">
@@ -87,7 +82,6 @@ require __DIR__ . '/admin/header.php';
         </div>
     </div>
 
-    <!-- Liste des utilisateurs -->
     <?php if (!empty($users)): ?>
     <div class="card card-custom mt-4">
         <div class="card-header card-header-custom">
@@ -97,12 +91,7 @@ require __DIR__ . '/admin/header.php';
             <div class="table-responsive">
                 <table class="table table-striped mb-0">
                     <thead class="table-dark">
-                        <tr>
-                            <th>#</th>
-                            <th>Utilisateur</th>
-                            <th>Adresse MAC</th>
-                            <th>Adresse IP</th>
-                        </tr>
+                        <tr><th>#</th><th>Utilisateur</th><th>Adresse MAC</th><th>Adresse IP</th></tr>
                     </thead>
                     <tbody>
                         <?php foreach ($users as $i => $u): ?>
@@ -128,7 +117,6 @@ require __DIR__ . '/admin/header.php';
         </div>
     <?php endif; ?>
 
-    <!-- Auto-rafraîchissement -->
     <div class="text-end mt-3">
         <small class="text-muted">Dernière mise à jour : <?= date('Y-m-d H:i:s') ?> (rafraîchit toutes les 30s)</small>
     </div>
