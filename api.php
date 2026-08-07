@@ -785,6 +785,54 @@ switch ($route) {
         }
         break;
 
+        case 'log-sale':
+        require_sync_key($config);
+        $payload = get_request_payload();
+        $date    = $payload['date']    ?? '';
+        $time    = $payload['time']    ?? '';
+        $user    = $payload['user']    ?? '';
+        $amount  = $payload['amount']  ?? '';
+        $ip      = $payload['ip']      ?? '';
+        $mac     = $payload['mac']     ?? '';
+        $profile = $payload['profile'] ?? '';
+        $comment = $payload['comment'] ?? '';
+
+        if ($user === '') {
+            json_error('Données de vente incomplètes.');
+        }
+
+        try {
+            // Créer la table dans Turso si nécessaire
+            turso_pipeline($config, [[
+                'sql' => 'CREATE TABLE IF NOT EXISTS sales_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_date TEXT NOT NULL,
+                    sale_time TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    amount INTEGER,
+                    ip TEXT,
+                    mac TEXT,
+                    profile TEXT,
+                    comment TEXT,
+                    received_at TEXT NOT NULL
+                )',
+                'args' => [],
+            ]]);
+
+            // Insérer l'enregistrement
+            turso_pipeline($config, [[
+                'sql' => 'INSERT INTO sales_log (sale_date, sale_time, username, amount, ip, mac, profile, comment, received_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'args' => [$date, $time, $user, $amount, $ip, $mac, $profile, $comment, date('c')],
+            ]]);
+
+            json_response(['success' => true]);
+        } catch (Throwable $e) {
+            ara_log('api.php Log-sale error: ' . $e->getMessage(), $config, 'error');
+            json_error('Erreur lors de l\'enregistrement de la vente.', 500);
+        }
+        break;
+    
     default:
         json_error('Route inconnue.', 404);
 }
