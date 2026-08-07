@@ -2,10 +2,19 @@
 declare(strict_types=1);
 require __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
-$config = require __DIR__ . '/../config.php';   // <-- capture du tableau
+$config = require __DIR__ . '/../config.php';
 
-// ------ Récupération des données ------
+// ------ Connexion et création de la table si nécessaire ------
 $pdo = ara_db($config);
+
+$pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date TEXT NOT NULL,
+    snapshot_time TEXT NOT NULL,
+    active_count INTEGER NOT NULL,
+    users_blob TEXT,
+    received_at TEXT NOT NULL
+)");
 
 // 1. Dernier snapshot (sessions actives)
 $stmt = $pdo->query("SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1");
