@@ -1,84 +1,28 @@
 <?php
 declare(strict_types=1);
-require __DIR__ . '/auth.php';   // garde la protection par mot de passe
+require __DIR__ . '/auth.php';
+require __DIR__ . '/db.php';
 $config = require __DIR__ . '/config.php';
 
-// ---------------------------------------------------------------------
-// Fonctions Turso (identiques à api.php – on évite la duplication)
-// ---------------------------------------------------------------------
-function turso_pipeline(array $config, array $stmts): array {
-    if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
-        throw new RuntimeException('Turso non configuré.');
-    }
-    $url   = rtrim($config['turso']['url'], '/') . '/v2/pipeline';
-    $token = $config['turso']['token'];
-    $requests = [];
-    foreach ($stmts as $stmt) {
-        $requests[] = [
-            'type'  => 'execute',
-            'stmt'  => [
-                'sql'  => $stmt['sql'],
-                'args' => array_map(fn($v) => ['type' => 'text', 'value' => (string)$v], $stmt['args'] ?? []),
-            ],
-        ];
-    }
-    $requests[] = ['type' => 'close'];
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_POSTFIELDS     => json_encode(['requests' => $requests]),
-        CURLOPT_HTTPHEADER     => [
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . $token,
-        ],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 10,
-    ]);
-    $raw  = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err  = curl_error($ch);
-    curl_close($ch);
-    if ($raw === false) throw new RuntimeException("Turso cURL error: $err");
-    $decoded = json_decode($raw, true);
-    if (!is_array($decoded)) throw new RuntimeException("Turso réponse invalide (HTTP $code)");
-    foreach ($decoded['results'] ?? [] as $r) {
-        if (($r['type']??'') === 'error') throw new RuntimeException('Turso SQL: ' . ($r['error']['message']??'inconnue'));
-    }
-    return $decoded['results'] ?? [];
-}
-
-function turso_rows(array $result): array {
-    $response = $result['response']['result'] ?? [];
-    $cols = array_column($response['cols'] ?? [], 'name');
-    $rows = [];
-    foreach ($response['rows'] ?? [] as $row) {
-        $assoc = [];
-        foreach ($row as $i => $cell) $assoc[$cols[$i]] = $cell['value'] ?? null;
-        $rows[] = $assoc;
-    }
-    return $rows;
-}
-// ---------------------------------------------------------------------
-
 $snapshot = null;
-$error    = '';
+$error = '';
 
 try {
-    // Lire le snapshot le plus récent, peu importe la date
-    $results = turso_pipeline($config, [
-        [
-            'sql'  => 'SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
-            'args' => [],
-        ]
-    ]);
+    $pdo = ara_db($config);
 
-    foreach ($results as $r) {
-        if (isset($r['response']['result']['cols'])) {
-            $rows = turso_rows($r);
-            if (!empty($rows)) $snapshot = $rows[0];
-            break;
-        }
-    }
+    // S'assurer que la table existe (au cas où)
+    $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_date TEXT NOT NULL,
+        snapshot_time TEXT NOT NULL,
+        active_count INTEGER NOT NULL,
+        users_blob TEXT,
+        received_at TEXT NOT NULL
+    )");
+
+    // Dernier snapshot
+    $stmt = $pdo->query("SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1");
+    $snapshot = $stmt->fetch(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
     $error = $e->getMessage();
 }
@@ -132,15 +76,9 @@ if ($usersBlob !== '') {
     <?php else: ?>
         <p><span class="dot online"></span> Last snapshot: <strong><?= htmlspecialchars($lastDate . ' ' . $lastTime) ?></strong></p>
         <p>Active hotspot users: <strong><?= $activeCount ?></strong></p>
-
         <?php if (!empty($users)): ?>
             <table>
-                <tr>
-                    <th>#</th>
-                    <th>User</th>
-                    <th>MAC Address</th>
-                    <th>IP Address</th>
-                </tr>
+                <tr><th>#</th><th>User</th><th>MAC Address</th><th>IP Address</th></tr>
                 <?php foreach ($users as $i => $u): ?>
                 <tr>
                     <td><?= $i + 1 ?></td>
@@ -154,7 +92,6 @@ if ($usersBlob !== '') {
             <p>No users connected at that moment.</p>
         <?php endif; ?>
     <?php endif; ?>
-
     <p><small>Last updated: <?= date('Y-m-d H:i:s') ?> (auto‑refreshes every 30s)</small></p>
 </body>
 </html>
