@@ -927,6 +927,42 @@ switch ($route) {
             json_error($msg, 500);
         }
         break;
+        case 'get-sales-daily':
+        require_admin_token($config);
+        $startDate = $_GET['start'] ?? date('Y-m-01');
+        $endDate   = $_GET['end']   ?? date('Y-m-d');
+        try {
+            turso_pipeline($config, [[
+                'sql' => 'CREATE TABLE IF NOT EXISTS sales_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_date TEXT NOT NULL,
+                    sale_time TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    amount INTEGER,
+                    ip TEXT,
+                    mac TEXT,
+                    profile TEXT,
+                    comment TEXT,
+                    received_at TEXT NOT NULL
+                )',
+                'args' => [],
+            ]]);
+            $results = turso_pipeline($config, [[
+                'sql'  => 'SELECT sale_date, SUM(amount) AS total FROM sales_log WHERE sale_date BETWEEN ? AND ? GROUP BY sale_date ORDER BY sale_date ASC',
+                'args' => [$startDate, $endDate],
+            ]]);
+            $daily = [];
+            foreach ($results as $r) {
+                if (!empty($r['response']['result']['cols'])) {
+                    $daily = turso_rows($r);
+                    break;
+                }
+            }
+            json_response(['success' => true, 'daily' => $daily]);
+        } catch (Throwable $e) {
+            json_error('Erreur get-sales-daily: ' . $e->getMessage(), 500);
+        }
+        break;
     
     default:
         json_error('Route inconnue.', 404);
