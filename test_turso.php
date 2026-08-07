@@ -43,6 +43,14 @@ function turso_pipeline(array $config, array $stmts): array {
     return $decoded['results'] ?? [];
 }
 
+function turso_value(array $result, string $column): ?string {
+    $response = $result['response']['result'] ?? [];
+    $rows = $response['rows'] ?? [];
+    if (empty($rows)) return null;
+    // return first row, first column
+    return $rows[0][0]['value'] ?? null;
+}
+
 function turso_rows(array $result): array {
     $response = $result['response']['result'] ?? [];
     $cols = array_column($response['cols'] ?? [], 'name');
@@ -59,15 +67,15 @@ $message = '';
 $latest = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Écrire un snapshot ET le relire immédiatement dans le même pipeline
+    // Écrire, récupérer l'ID, relire par ID
     try {
-        $date = date('Y-m-d');
-        $time = date('H:i:s');
+        $date   = date('Y-m-d');
+        $time   = date('H:i:s');
         $active = 3;
-        $users = 'test1,AA:BB:CC:DD:EE:FF,10.0.0.1||test2,11:22:33:44:55:66,10.0.0.2||';
+        $users  = 'test1,AA:BB:CC:DD:EE:FF,10.0.0.1||test2,11:22:33:44:55:66,10.0.0.2||';
 
         $results = turso_pipeline($config, [
-            // 1. Créer la table si elle n'existe pas
+            // 1. Créer la table
             [
                 'sql'  => 'CREATE TABLE IF NOT EXISTS hotspot_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,26 +93,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                          VALUES (?, ?, ?, ?, ?)',
                 'args' => [$date, $time, $active, $users, date('c')],
             ],
-            // 3. Relire le dernier (celui qu'on vient d'insérer)
+            // 3. Récupérer le dernier ID inséré
             [
-                'sql'  => 'SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
+                'sql'  => 'SELECT last_insert_rowid() AS new_id',
                 'args' => [],
             ],
         ]);
 
-        // Récupérer le résultat du SELECT (le dernier avec 'cols')
+        // Extraire l'ID
+        $newId = null;
         foreach ($results as $r) {
+            $val = turso_value($r, 'new_id');
+            if ($val !== null) {
+                $newId = $val;
+                break;
+            }
+        }
+
+        if (!$newId) {
+            throw new RuntimeException('Impossible de récupérer l\'ID après insertion.');
+        }
+
+        // 4. Relire la ligne par son ID (nouvelle requête pour garantir la fraîcheur)
+        $results2 = turso_pipeline($config, [
+            [
+                'sql'  => 'SELECT * FROM hotspot_snapshots WHERE id = ?',
+                'args' => [$newId],
+            ],
+        ]);
+
+        foreach ($results2 as $r) {
             if (isset($r['response']['result']['cols'])) {
                 $rows = turso_rows($r);
                 if (!empty($rows)) $latest = $rows[0];
             }
         }
-        $message = $latest ? "Snapshot de test inséré et relu avec succès." : "Insertion OK mais le SELECT n'a rien retourné.";
+
+        $message = $latest
+            ? "Snapshot inséré (ID=$newId) et relu avec succès."
+            : "Insertion OK (ID=$newId) mais impossible de relire la ligne – contacter le support Turso.";
     } catch (Throwable $e) {
         $message = 'ERREUR : ' . $e->getMessage();
     }
 } else {
-    // Affichage simple (GET) : juste relire le dernier snapshot
+    // GET : relire le dernier snapshot par date
     try {
         $results = turso_pipeline($config, [
             [
