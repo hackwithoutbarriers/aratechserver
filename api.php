@@ -635,8 +635,6 @@ switch ($route) {
 
     case 'push-logs':
         // Appelé UNIQUEMENT par le scheduler RouterOS — jamais par le navigateur.
-        // Corps : lignes texte tabulées (time\ttopics\tmessage\n), Content-Type: text/plain.
-        // Stockage persistant dans Turso (SQLite distribué), survivant aux redémarrages Render.
         require_sync_key($config);
 
         $date = normalize_router_date($_GET['date'] ?? '');
@@ -647,7 +645,6 @@ switch ($route) {
         }
 
         try {
-            // Créer la table si besoin (idempotent)
             ensure_router_logs_table($config);
 
             $now      = date('c');
@@ -696,7 +693,6 @@ switch ($route) {
 
     case 'get-logs':
         // Route admin : consulter les logs d'une journée depuis Turso.
-        // Usage : api.php?route=get-logs&token=ADMIN_TOKEN&date=2026-08-06&topic=hotspot
         require_admin_token($config);
 
         $date  = normalize_router_date($_GET['date'] ?? date('Y-m-d'));
@@ -721,7 +717,6 @@ switch ($route) {
                 ]]);
             }
 
-            // Le premier résultat = CREATE TABLE (ignoré), le suivant = SELECT
             $selectResult = null;
             foreach ($results as $r) {
                 $type = $r['response']['result']['cols'] ?? null;
@@ -738,11 +733,8 @@ switch ($route) {
         }
         break;
 
-    default:
-        json_error('Route inconnue.', 404);
-}
+    // ============ NOUVELLE ROUTE push-status (correctement placée) ============
     case 'push-status':
-        // Appelé UNIQUEMENT par le scheduler RouterOS
         require_sync_key($config);
         $payload = get_request_payload();
         $activeCount = (int)($payload['active'] ?? 0);
@@ -752,7 +744,7 @@ switch ($route) {
         $time = date('H:i:s');
 
         try {
-            // Ensure table exists
+            // Créer la table si elle n'existe pas
             turso_pipeline($config, [[
                 'sql' => 'CREATE TABLE IF NOT EXISTS hotspot_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -765,7 +757,7 @@ switch ($route) {
                 'args' => [],
             ]]);
 
-            // Insert snapshot
+            // Insérer le snapshot
             turso_pipeline($config, [[
                 'sql' => 'INSERT INTO hotspot_snapshots (snapshot_date, snapshot_time, active_count, users_blob, received_at)
                          VALUES (?, ?, ?, ?, ?)',
@@ -778,3 +770,7 @@ switch ($route) {
             json_error('Erreur lors de l\'enregistrement du statut.', 500);
         }
         break;
+
+    default:
+        json_error('Route inconnue.', 404);
+}
