@@ -13,6 +13,13 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_expiry (
     updated_at TEXT NOT NULL
 )");
 
+// Restaurer depuis Turso si la locale est vide
+restore_from_turso_if_empty($pdo, $config, 'hotspot_expiry',
+    'SELECT user, expiry, updated_at FROM hotspot_expiry',
+    [],
+    'INSERT OR REPLACE INTO hotspot_expiry (user, expiry, updated_at) VALUES (?, ?, ?)'
+);
+
 $search = trim($_GET['search'] ?? '');
 
 if ($search !== '') {
