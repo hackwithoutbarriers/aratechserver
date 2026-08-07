@@ -10,7 +10,7 @@ require __DIR__ . '/RouterosAPI.php';
 $config = require __DIR__ . '/config.php';
 
 header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: ' . $config['allowed_origin']);
+header('Access-Control-Allow-Origin: *'); // La sécurité des routes sensibles repose sur X-API-Key et admin token, pas sur l'origine
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, X-API-Key');
 
@@ -412,6 +412,22 @@ function ensure_router_logs_table(array $config): void
 }
 
 /**
+ * Crée la table hotspot_expiry dans Turso (persistante, survit aux redémarrages Render).
+ * Remplace la version SQLite locale qui était effacée à chaque restart.
+ */
+function ensure_hotspot_expiry_turso(array $config): void
+{
+    turso_pipeline($config, [[
+        'sql'  => 'CREATE TABLE IF NOT EXISTS hotspot_expiry (
+            user       TEXT PRIMARY KEY,
+            expiry     TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )',
+        'args' => [],
+    ]]);
+}
+
+/**
  * Normalise la date RouterOS (ex: "aug/06/2026") en ISO (ex: "2026-08-06").
  * Retourne la date du jour si le format n'est pas reconnu.
  */
@@ -563,32 +579,28 @@ switch ($route) {
 
     case 'set-expiry':
         // Appelé UNIQUEMENT par le script on-login du routeur — jamais par le navigateur d'un client.
+        // Stockage dans Turso (persistant) — plus de perte de données au redémarrage Render.
         require_sync_key($config);
         $payload = get_request_payload();
-        $user = trim((string)($payload['user'] ?? ''));
+        $user   = trim((string)($payload['user']   ?? ''));
         $expiry = trim((string)($payload['expiry'] ?? ''));
         if ($user === '' || $expiry === '') {
             json_error('user et expiry requis.');
         }
         try {
-            $pdo = ara_db($config);
-            ensure_hotspot_expiry_table($pdo);
-            $stmt = $pdo->prepare(
-                'INSERT INTO hotspot_expiry (user, expiry, updated_at)
-                 VALUES (:user, :expiry, :updated_at)
-                 ON CONFLICT(user) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at'
-            );
-            $stmt->execute([
-                ':user' => $user,
-                ':expiry' => $expiry,
-                ':updated_at' => date('c'),
-            ]);
+            ensure_hotspot_expiry_turso($config);
+            turso_pipeline($config, [[
+                'sql'  => 'INSERT INTO hotspot_expiry (user, expiry, updated_at)
+                           VALUES (?, ?, ?)
+                           ON CONFLICT(user) DO UPDATE SET
+                               expiry     = excluded.expiry,
+                               updated_at = excluded.updated_at',
+                'args' => [$user, $expiry, date('c')],
+            ]]);
         } catch (Throwable $e) {
-            ara_log('api.php Set-expiry DB error: ' . $e->getMessage(), $config, 'error');
+            ara_log('api.php Set-expiry error: ' . $e->getMessage(), $config, 'error');
             $message = 'Impossible d\'enregistrer l\'expiration.';
-            if (!empty($config['debug'])) {
-                $message .= ' [debug] ' . $e->getMessage();
-            }
+            if (!empty($config['debug'])) $message .= ' [debug] ' . $e->getMessage();
             json_error($message, 500);
         }
         json_response(['success' => true]);
@@ -601,34 +613,34 @@ switch ($route) {
         }
 
         try {
-            $pdo = ara_db($config);
-            ensure_hotspot_expiry_table($pdo);
-
-            // 1) Source la plus rapide et la plus fiable : la valeur poussée par le routeur au login
-            $stmt = $pdo->prepare('SELECT expiry FROM hotspot_expiry WHERE user = :user');
-            $stmt->execute([':user' => $user]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($row && $row['expiry']) {
-                json_response(['success' => true, 'expiry' => $row['expiry']]);
-                break;
+            // 1) Turso (persistant) — source principale
+            ensure_hotspot_expiry_turso($config);
+            $results = turso_pipeline($config, [[
+                'sql'  => 'SELECT expiry FROM hotspot_expiry WHERE user = ?',
+                'args' => [$user],
+            ]]);
+            foreach ($results as $r) {
+                if (!empty($r['response']['result']['cols'])) {
+                    $rows = turso_rows($r);
+                    if (!empty($rows[0]['expiry'])) {
+                        json_response(['success' => true, 'expiry' => $rows[0]['expiry']]);
+                    }
+                    break;
+                }
             }
 
-            // 2) Repli : interroger le routeur en direct (peut être lent si injoignable — jusqu'à ~30s
-            //    avec les réglages connect_timeout/connect_retries actuels de config.php)
+            // 2) Repli : routeur en direct (timeout court, souvent injoignable depuis Render)
             $expiry = get_user_expiry_from_router($config, $user);
             if ($expiry !== '') {
                 json_response(['success' => true, 'expiry' => $expiry]);
-                break;
             }
 
-            // 3) Dernier recours : date générique (n'arrive que si aucune des 2 sources n'a répondu)
+            // 3) Dernier recours uniquement si les 2 sources ont échoué
             json_response(['success' => true, 'expiry' => date('Y-m-d H:i:s', strtotime('+24 hours'))]);
         } catch (Throwable $e) {
             ara_log('api.php Expiry error: ' . $e->getMessage(), $config, 'error');
             $message = 'Erreur lors de la récupération de l\'expiration.';
-            if (!empty($config['debug'])) {
-                $message .= ' [debug] ' . $e->getMessage();
-            }
+            if (!empty($config['debug'])) $message .= ' [debug] ' . $e->getMessage();
             json_error($message, 500);
         }
         break;
