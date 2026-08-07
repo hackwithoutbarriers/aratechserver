@@ -3,6 +3,7 @@ declare(strict_types=1);
 require __DIR__ . '/auth.php';   // plus besoin de ../admin/
 require_once __DIR__ . '/../db.php';
 $config = require __DIR__ . '/../config.php';
+require_once __DIR__ . '/lib_turso.php';
 
 $pageTitle = 'Statut Hotspot - ARA Tech WiFi';
 
