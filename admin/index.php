@@ -139,6 +139,50 @@ require __DIR__ . '/header.php';
         </div>
     </div>
 
+    <!-- Rangée : Graphique des ventes par profil (mois) -->
+<?php if (!empty($profileStatsMonth)): ?>
+<div class="row mt-3">
+    <div class="col-12">
+        <div class="card card-custom">
+            <div class="card-header card-header-custom">Ventes du mois par profil</div>
+            <div class="card-body">
+                <canvas id="salesChart" height="100"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const ctx = document.getElementById('salesChart').getContext('2d');
+    const profileData = <?= json_encode($profileStatsMonth) ?>;
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: profileData.map(p => p.profile || 'Inconnu'),
+            datasets: [{
+                label: 'Nombre de tickets',
+                data: profileData.map(p => p.nb || 0),
+                backgroundColor: '#f5a623',
+                borderColor: '#0b2c82',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: { stepSize: 1 }
+                }
+            },
+            plugins: {
+                legend: { display: false }
+            }
+        }
+    });
+});
+</script>
+<?php endif; ?>
+
     <!-- Rangée 3 : Alertes système -->
     <div class="row mt-3">
         <div class="col-12">
