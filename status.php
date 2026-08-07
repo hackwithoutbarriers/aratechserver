@@ -3,6 +3,70 @@ declare(strict_types=1);
 require __DIR__ . '/auth.php';         // kicks out non-logged-in users
 require __DIR__ . '/RouterosAPI.php';  // your existing API wrapper
 $config = require __DIR__ . '/config.php';
+// Minimal Turso helper (copied from api.php – move to a shared file later)
+function turso_pipeline(array $config, array $stmts): array {
+    if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
+        throw new RuntimeException('Turso non configuré.');
+    }
+    $url   = rtrim($config['turso']['url'], '/') . '/v2/pipeline';
+    $token = $config['turso']['token'];
+
+    $requests = [];
+    foreach ($stmts as $stmt) {
+        $requests[] = [
+            'type' => 'execute',
+            'stmt' => [
+                'sql'  => $stmt['sql'],
+                'args' => array_map(fn($v) => ['type' => 'text', 'value' => (string)$v], $stmt['args'] ?? []),
+            ],
+        ];
+    }
+    $requests[] = ['type' => 'close'];
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode(['requests' => $requests]),
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $token,
+        ],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+    $raw  = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err  = curl_error($ch);
+    curl_close($ch);
+
+    if ($raw === false) {
+        throw new RuntimeException("Turso injoignable (cURL: $err).");
+    }
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException("Réponse Turso invalide (HTTP $code).");
+    }
+    foreach ($decoded['results'] ?? [] as $result) {
+        if (($result['type'] ?? '') === 'error') {
+            throw new RuntimeException('Turso SQL: ' . ($result['error']['message'] ?? 'erreur inconnue'));
+        }
+    }
+    return $decoded['results'] ?? [];
+}
+
+function turso_rows(array $result): array {
+    $response = $result['response']['result'] ?? [];
+    $cols = array_column($response['cols'] ?? [], 'name');
+    $rows = [];
+    foreach ($response['rows'] ?? [] as $row) {
+        $assoc = [];
+        foreach ($row as $i => $cell) {
+            $assoc[$cols[$i]] = $cell['value'] ?? null;
+        }
+        $rows[] = $assoc;
+    }
+    return $rows;
+}
 
 $status = null;
 $activeUsers = [];
