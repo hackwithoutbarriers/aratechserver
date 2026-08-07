@@ -735,6 +735,7 @@ switch ($route) {
 
     // ============ NOUVELLE ROUTE push-status (correctement placée) ============
     case 'push-status':
+        // Appelé UNIQUEMENT par le scheduler RouterOS
         require_sync_key($config);
         $payload = get_request_payload();
         $activeCount = (int)($payload['active'] ?? 0);
@@ -744,25 +745,23 @@ switch ($route) {
         $time = date('H:i:s');
 
         try {
+            $pdo = ara_db($config);
+
             // Créer la table si elle n'existe pas
-            turso_pipeline($config, [[
-                'sql' => 'CREATE TABLE IF NOT EXISTS hotspot_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    snapshot_date TEXT NOT NULL,
-                    snapshot_time TEXT NOT NULL,
-                    active_count INTEGER NOT NULL,
-                    users_blob TEXT,
-                    received_at TEXT NOT NULL
-                )',
-                'args' => [],
-            ]]);
+            $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_date TEXT NOT NULL,
+                snapshot_time TEXT NOT NULL,
+                active_count INTEGER NOT NULL,
+                users_blob TEXT,
+                received_at TEXT NOT NULL
+            )");
 
             // Insérer le snapshot
-            turso_pipeline($config, [[
-                'sql' => 'INSERT INTO hotspot_snapshots (snapshot_date, snapshot_time, active_count, users_blob, received_at)
-                         VALUES (?, ?, ?, ?, ?)',
-                'args' => [$date, $time, $activeCount, $usersRaw, $now],
-            ]]);
+            $stmt = $pdo->prepare("INSERT INTO hotspot_snapshots 
+                (snapshot_date, snapshot_time, active_count, users_blob, received_at)
+                VALUES (?, ?, ?, ?, ?)");
+            $stmt->execute([$date, $time, $activeCount, $usersRaw, $now]);
 
             json_response(['success' => true, 'active' => $activeCount]);
         } catch (Throwable $e) {
