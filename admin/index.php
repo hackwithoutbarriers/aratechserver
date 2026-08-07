@@ -3,6 +3,7 @@ declare(strict_types=1);
 require __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
 $config = require __DIR__ . '/../config.php';
+require_once __DIR__ . '/lib_turso.php';   // indispensable
 
 $pdo = ara_db($config);
 $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
@@ -14,8 +15,10 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
     received_at TEXT NOT NULL
 )");
 
-// Restaurer depuis Turso si nécessaire
-restore_from_turso_if_empty($pdo, $config, 'hotspot_snapshots',
+// Restaurer depuis Turso si la locale est vide (dernier snapshot)
+restore_from_turso_if_empty(
+    $pdo, $config,
+    'hotspot_snapshots',
     'SELECT snapshot_date, snapshot_time, active_count, users_blob, received_at FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
     [],
     'INSERT INTO hotspot_snapshots (snapshot_date, snapshot_time, active_count, users_blob, received_at) VALUES (?, ?, ?, ?, ?)'
@@ -68,7 +71,6 @@ $stmt = $pdo->prepare("SELECT COUNT(DISTINCT id) FROM hotspot_snapshots WHERE sn
 $stmt->execute([$today]);
 $dailyRegistered = (int)$stmt->fetchColumn();
 
-// Titre de la page (utilisé par header.php)
 $pageTitle = 'Tableau de bord - ARA Tech WiFi';
 require __DIR__ . '/header.php';
 ?>
@@ -146,49 +148,42 @@ require __DIR__ . '/header.php';
         </div>
     </div>
 
-    <!-- Rangée : Graphique des ventes par profil (mois) -->
-<?php if (!empty($profileStatsMonth)): ?>
-<div class="row mt-3">
-    <div class="col-12">
-        <div class="card card-custom">
-            <div class="card-header card-header-custom">Ventes du mois par profil</div>
-            <div class="card-body">
-                <canvas id="salesChart" height="100"></canvas>
+    <!-- Graphique ventes par profil -->
+    <?php if (!empty($profileStatsMonth)): ?>
+    <div class="row mt-3">
+        <div class="col-12">
+            <div class="card card-custom">
+                <div class="card-header card-header-custom">Ventes du mois par profil</div>
+                <div class="card-body">
+                    <canvas id="salesChart" height="100"></canvas>
+                </div>
             </div>
         </div>
     </div>
-</div>
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    const ctx = document.getElementById('salesChart').getContext('2d');
-    const profileData = <?= json_encode($profileStatsMonth) ?>;
-    new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: profileData.map(p => p.profile || 'Inconnu'),
-            datasets: [{
-                label: 'Nombre de tickets',
-                data: profileData.map(p => p.nb || 0),
-                backgroundColor: '#f5a623',
-                borderColor: '#0b2c82',
-                borderWidth: 1
-            }]
-        },
-        options: {
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: { stepSize: 1 }
-                }
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const ctx = document.getElementById('salesChart').getContext('2d');
+        const profileData = <?= json_encode($profileStatsMonth) ?>;
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: profileData.map(p => p.profile || 'Inconnu'),
+                datasets: [{
+                    label: 'Nombre de tickets',
+                    data: profileData.map(p => p.nb || 0),
+                    backgroundColor: '#f5a623',
+                    borderColor: '#0b2c82',
+                    borderWidth: 1
+                }]
             },
-            plugins: {
-                legend: { display: false }
+            options: {
+                scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
+                plugins: { legend: { display: false } }
             }
-        }
+        });
     });
-});
-</script>
-<?php endif; ?>
+    </script>
+    <?php endif; ?>
 
     <!-- Rangée 3 : Alertes système -->
     <div class="row mt-3">
