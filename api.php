@@ -741,3 +741,40 @@ switch ($route) {
     default:
         json_error('Route inconnue.', 404);
 }
+    case 'push-status':
+        // Appelé UNIQUEMENT par le scheduler RouterOS
+        require_sync_key($config);
+        $payload = get_request_payload();
+        $activeCount = (int)($payload['active'] ?? 0);
+        $usersRaw = (string)($payload['users'] ?? '');
+        $now = date('c');
+        $date = date('Y-m-d');
+        $time = date('H:i:s');
+
+        try {
+            // Ensure table exists
+            turso_pipeline($config, [[
+                'sql' => 'CREATE TABLE IF NOT EXISTS hotspot_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_date TEXT NOT NULL,
+                    snapshot_time TEXT NOT NULL,
+                    active_count INTEGER NOT NULL,
+                    users_blob TEXT,
+                    received_at TEXT NOT NULL
+                )',
+                'args' => [],
+            ]]);
+
+            // Insert snapshot
+            turso_pipeline($config, [[
+                'sql' => 'INSERT INTO hotspot_snapshots (snapshot_date, snapshot_time, active_count, users_blob, received_at)
+                         VALUES (?, ?, ?, ?, ?)',
+                'args' => [$date, $time, $activeCount, $usersRaw, $now],
+            ]]);
+
+            json_response(['success' => true, 'active' => $activeCount]);
+        } catch (Throwable $e) {
+            ara_log('api.php Push-status error: ' . $e->getMessage(), $config, 'error');
+            json_error('Erreur lors de l\'enregistrement du statut.', 500);
+        }
+        break;
