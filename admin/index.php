@@ -229,9 +229,9 @@ $profileStats = array_fill_keys($profiles, ['remaining' => 0, 'sold' => 0]);
                         <a href="../status.php" class="quick-link"><i class="bi bi-wifi"></i> Statut Hotspot</a>
                         <a href="ads.php" class="quick-link"><i class="bi bi-megaphone"></i> Annonces</a>
                         <a href="logs.php" class="quick-link"><i class="bi bi-journal-text"></i> Logs</a>
-                        <span class="quick-link disabled text-muted"><i class="bi bi-people"></i> Utilisateurs (bientôt)</span>
-                        <span class="quick-link disabled text-muted"><i class="bi bi-graph-up"></i> Rapports (bientôt)</span>
-                        <span class="quick-link disabled text-muted"><i class="bi bi-sliders"></i> Configuration (bientôt)</span>
+                        <span class="quick-link text-muted"><i class="bi bi-people"></i> Utilisateurs (bientôt)</span>
+                        <span class="quick-link text-muted"><i class="bi bi-graph-up"></i> Rapports (bientôt)</span>
+                        <span class="quick-link text-muted"><i class="bi bi-sliders"></i> Configuration (bientôt)</span>
                     </div>
                 </div>
             </div>
