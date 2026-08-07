@@ -20,6 +20,9 @@ return [
     // par le script on-login via set-expiry) — ce repli ici échouera
     // systématiquement, d'où un timeout volontairement court pour ne
     // pas ralentir inutilement les requêtes.
+    'router_ip'       => '192.168.88.1',  
+    'router_user'     => 'admin',          
+    'router_password' => '04011997',
     'mikrotik' => [
         'host'            => '192.168.88.1',          // IP du routeur (réseau de gestion)
         'api_user'        => 'api-hotspot',            // Utilisateur API (peut être désactivé)
