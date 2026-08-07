@@ -49,7 +49,7 @@ declare(strict_types=1);
                         <i class="bi bi-compass"></i> Navigation rapide
                     </a>
                     <ul class="dropdown-menu">
-                        <li><a class="dropdown-item" href="../status.php"><i class="bi bi-wifi"></i> Statut Hotspot</a></li>
+                        <li><a class="dropdown-item" href="status.php"><i class="bi bi-wifi"></i> Statut Hotspot</a></li>
                         <li><a class="dropdown-item" href="ads.php"><i class="bi bi-megaphone"></i> Annonces</a></li>
                         <li><a class="dropdown-item" href="logs.php"><i class="bi bi-journal-text"></i> Logs</a></li>
                         <li><a class="dropdown-item" href="users.php"><i class="bi bi-people"></i> Utilisateurs</a></li>
