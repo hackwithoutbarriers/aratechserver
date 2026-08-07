@@ -71,3 +71,43 @@ function ara_log(string $message, array $config, string $level = 'info'): void
         FILE_APPEND | LOCK_EX
     );
 }
+
+/**
+ * Si la table locale est vide, la remplit depuis Turso.
+ * Retourne true si des données ont été restaurées.
+ */
+function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, string $tursoQuery, array $tursoArgs, string $insertLocalSQL): bool
+{
+    // Vérifier si la locale est vide
+    $stmt = $pdo->query("SELECT COUNT(*) FROM $table");
+    if ((int)$stmt->fetchColumn() > 0) {
+        return false; // déjà des données
+    }
+
+    // Turso configuré ?
+    if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
+        return false;
+    }
+
+    try {
+        $results = turso_pipeline($config, [[
+            'sql' => $tursoQuery,
+            'args' => $tursoArgs,
+        ]]);
+        $rows = [];
+        foreach ($results as $r) {
+            if (!empty($r['response']['result']['cols'])) {
+                $rows = turso_rows($r);
+                break;
+            }
+        }
+        foreach ($rows as $row) {
+            $stmt = $pdo->prepare($insertLocalSQL);
+            $stmt->execute(array_values($row));
+        }
+        return !empty($rows);
+    } catch (Throwable $e) {
+        // Silencieux
+    }
+    return false;
+}
