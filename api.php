@@ -756,7 +756,7 @@ switch ($route) {
         }
         break;
 
-    case 'push-status':
+        case 'push-status':
         require_sync_key($config);
         $payload = get_request_payload();
         $activeCount = (int)($payload['active'] ?? 0);
@@ -764,7 +764,9 @@ switch ($route) {
         $now = date('c');
         $date = date('Y-m-d');
         $time = date('H:i:s');
+
         try {
+            // 1) Base locale (immédiate)
             $pdo = ara_db($config);
             $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -778,6 +780,28 @@ switch ($route) {
                 (snapshot_date, snapshot_time, active_count, users_blob, received_at)
                 VALUES (?, ?, ?, ?, ?)");
             $stmt->execute([$date, $time, $activeCount, $usersRaw, $now]);
+
+            // 2) Miroir Turso (persistant)
+            if (!empty($config['turso']['url']) && !empty($config['turso']['token'])) {
+                turso_pipeline($config, [[
+                    'sql' => 'CREATE TABLE IF NOT EXISTS hotspot_snapshots (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        snapshot_date TEXT NOT NULL,
+                        snapshot_time TEXT NOT NULL,
+                        active_count INTEGER NOT NULL,
+                        users_blob TEXT,
+                        received_at TEXT NOT NULL
+                    )',
+                    'args' => [],
+                ]]);
+                turso_pipeline($config, [[
+                    'sql' => 'INSERT INTO hotspot_snapshots 
+                        (snapshot_date, snapshot_time, active_count, users_blob, received_at)
+                        VALUES (?, ?, ?, ?, ?)',
+                    'args' => [$date, $time, $activeCount, $usersRaw, $now],
+                ]]);
+            }
+
             json_response(['success' => true, 'active' => $activeCount]);
         } catch (Throwable $e) {
             ara_log('api.php Push-status error: ' . $e->getMessage(), $config, 'error');
