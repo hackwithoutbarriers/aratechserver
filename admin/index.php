@@ -14,6 +14,13 @@ $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
     received_at TEXT NOT NULL
 )");
 
+// Restaurer depuis Turso si nécessaire
+restore_from_turso_if_empty($pdo, $config, 'hotspot_snapshots',
+    'SELECT snapshot_date, snapshot_time, active_count, users_blob, received_at FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
+    [],
+    'INSERT INTO hotspot_snapshots (snapshot_date, snapshot_time, active_count, users_blob, received_at) VALUES (?, ?, ?, ?, ?)'
+);
+
 // --- Sessions actives ---
 $stmt = $pdo->query("SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1");
 $snapshot = $stmt->fetch(PDO::FETCH_ASSOC);
