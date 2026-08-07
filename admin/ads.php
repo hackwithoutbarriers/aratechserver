@@ -23,25 +23,15 @@ try {
 ?>
 <!DOCTYPE html>
 <html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gestion des Annonces - ARA Tech WiFi</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
-    <style>
-        :root {
-            --bleu-nuit: #0b2c82;
-            --orange: #f5a623;
-        }
-        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; }
-        .navbar-custom { background: var(--bleu-nuit); }
-        .navbar-brand { font-weight: 700; font-size: 1.3rem; color: #fff !important; }
-        .btn-orange { background: var(--orange); border: none; color: #fff; font-weight: 600; border-radius: 8px; }
-        .btn-orange:hover { background: #e5941f; color: #fff; }
-        .card-custom { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-    </style>
-</head>
+<?php
+declare(strict_types=1);
+require __DIR__ . '/auth.php';
+$config = require __DIR__ . '/../config.php';
+$pageTitle = 'Gestion des Annonces - ARA Tech WiFi';
+require __DIR__ . '/header.php';
+// ... suite du code PHP existant ...
+?>
+<!-- Le contenu HTML spécifique commence ici, sans navbar -->
 <body>
     <nav class="navbar navbar-custom navbar-dark px-3">
         <a href="index.php" class="navbar-brand">⚡ ARA Tech WiFi Admin</a>
