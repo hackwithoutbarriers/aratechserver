@@ -10,7 +10,7 @@ function ara_db(array $config): PDO
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->exec('PRAGMA journal_mode = WAL;');
 
-    // Table des annonces (pour l'admin)
+    // Table des annonces
     $pdo->exec("CREATE TABLE IF NOT EXISTS ads (
         id          TEXT PRIMARY KEY,
         type        TEXT NOT NULL,
@@ -37,6 +37,16 @@ function ara_db(array $config): PDO
         created_at TEXT NOT NULL
     )");
 
+    // Table de fidélité
+    $pdo->exec("CREATE TABLE IF NOT EXISTS loyalty (
+        user          TEXT PRIMARY KEY,
+        points        INTEGER NOT NULL DEFAULT 0,
+        topups        INTEGER NOT NULL DEFAULT 0,
+        referral_code TEXT,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT
+    )");
+
     // Table des transactions (gardée pour une éventuelle réactivation)
     $pdo->exec("CREATE TABLE IF NOT EXISTS transactions (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,16 +59,6 @@ function ara_db(array $config): PDO
         updated_at        TEXT
     )");
 
-        // Table de fidélité (loyalty)
-    $pdo->exec("CREATE TABLE IF NOT EXISTS loyalty (
-        user          TEXT PRIMARY KEY,
-        points        INTEGER NOT NULL DEFAULT 0,
-        topups        INTEGER NOT NULL DEFAULT 0,
-        referral_code TEXT,
-        created_at    TEXT NOT NULL,
-        updated_at    TEXT
-    )");
-    
     return $pdo;
 }
 
@@ -72,16 +72,90 @@ function ara_log(string $message, array $config, string $level = 'info'): void
     );
 }
 
-/**
- * Si la table locale est vide, la remplit depuis Turso.
- * Retourne true si des données ont été restaurées.
- */
+// ---------------------------------------------------------------------
+// Fonctions Turso (centralisées ici pour être utilisées partout)
+// ---------------------------------------------------------------------
+
+function turso_pipeline(array $config, array $stmts): array
+{
+    if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
+        throw new RuntimeException('Turso non configuré.');
+    }
+
+    $url   = rtrim($config['turso']['url'], '/') . '/v2/pipeline';
+    $token = $config['turso']['token'];
+
+    $requests = [];
+    foreach ($stmts as $stmt) {
+        $requests[] = [
+            'type' => 'execute',
+            'stmt' => [
+                'sql'  => $stmt['sql'],
+                'args' => array_map(
+                    static fn($v) => ['type' => 'text', 'value' => (string)$v],
+                    $stmt['args'] ?? []
+                ),
+            ],
+        ];
+    }
+    $requests[] = ['type' => 'close'];
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode(['requests' => $requests]),
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $token,
+        ],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+
+    $raw  = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err  = curl_error($ch);
+    curl_close($ch);
+
+    if ($raw === false) {
+        throw new RuntimeException("Turso injoignable (cURL: $err).");
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException("Réponse Turso invalide (HTTP $code).");
+    }
+
+    foreach ($decoded['results'] ?? [] as $result) {
+        if (($result['type'] ?? '') === 'error') {
+            throw new RuntimeException('Turso SQL: ' . ($result['error']['message'] ?? 'erreur inconnue'));
+        }
+    }
+
+    return $decoded['results'] ?? [];
+}
+
+function turso_rows(array $result): array
+{
+    $response = $result['response']['result'] ?? [];
+    $cols     = array_column($response['cols'] ?? [], 'name');
+    $rows     = [];
+    foreach ($response['rows'] ?? [] as $row) {
+        $assoc = [];
+        foreach ($row as $i => $cell) {
+            $assoc[$cols[$i]] = $cell['value'] ?? null;
+        }
+        $rows[] = $assoc;
+    }
+    return $rows;
+}
+
 function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, string $tursoQuery, array $tursoArgs, string $insertLocalSQL): bool
 {
     // Vérifier si la locale est vide
     $stmt = $pdo->query("SELECT COUNT(*) FROM $table");
     if ((int)$stmt->fetchColumn() > 0) {
-        return false; // déjà des données
+        return false;
     }
 
     // Turso configuré ?
@@ -91,7 +165,7 @@ function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, str
 
     try {
         $results = turso_pipeline($config, [[
-            'sql' => $tursoQuery,
+            'sql'  => $tursoQuery,
             'args' => $tursoArgs,
         ]]);
         $rows = [];
@@ -102,8 +176,8 @@ function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, str
             }
         }
         foreach ($rows as $row) {
-            $stmt = $pdo->prepare($insertLocalSQL);
-            $stmt->execute(array_values($row));
+            $insert = $pdo->prepare($insertLocalSQL);
+            $insert->execute(array_values($row));
         }
         return !empty($rows);
     } catch (Throwable $e) {
