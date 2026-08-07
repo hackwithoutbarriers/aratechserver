@@ -2,7 +2,7 @@
 declare(strict_types=1);
 require __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
-require_once __DIR__ . '/../config.php';
+$config = require __DIR__ . '/../config.php';   // <-- capture du tableau
 
 // ------ Récupération des données ------
 $pdo = ara_db($config);
@@ -24,7 +24,7 @@ $routerOnline = false;
 if ($lastSnapshotTime) {
     $last = DateTime::createFromFormat('Y-m-d H:i:s', $lastSnapshotTime, new DateTimeZone('UTC'));
     $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-    if ($last && $now->getTimestamp() - $last->getTimestamp() < 360) { // 6 minutes
+    if ($last && $now->getTimestamp() - $last->getTimestamp() < 360) {
         $routerOnline = true;
     }
 }
@@ -36,8 +36,6 @@ $caMonth = 0;
 // 5. Tickets par profil (placeholder)
 $profiles = ['10H', '24H', 'Week', 'Month', 'Abonnement'];
 $profileStats = array_fill_keys($profiles, ['remaining' => 0, 'sold' => 0]);
-
-// (Plus tard, on pourra remplacer par une requête à l'API ou à Turso)
 
 ?>
 <!DOCTYPE html>
@@ -201,7 +199,7 @@ $profileStats = array_fill_keys($profiles, ['remaining' => 0, 'sold' => 0]);
             </div>
         </div>
 
-        <!-- Rangée 3 : Alertes système (placeholder) -->
+        <!-- Rangée 3 : Alertes système -->
         <div class="row mt-3">
             <div class="col-12">
                 <div class="card card-custom">
@@ -222,9 +220,9 @@ $profileStats = array_fill_keys($profiles, ['remaining' => 0, 'sold' => 0]);
                         <a href="../status.php" class="quick-link"><i class="bi bi-wifi"></i> Statut Hotspot</a>
                         <a href="ads.php" class="quick-link"><i class="bi bi-megaphone"></i> Annonces</a>
                         <a href="logs.php" class="quick-link"><i class="bi bi-journal-text"></i> Logs</a>
-                        <a href="#" class="quick-link disabled" aria-disabled="true"><i class="bi bi-people"></i> Utilisateurs (bientôt)</a>
-                        <a href="#" class="quick-link disabled" aria-disabled="true"><i class="bi bi-graph-up"></i> Rapports (bientôt)</a>
-                        <a href="#" class="quick-link disabled" aria-disabled="true"><i class="bi bi-sliders"></i> Configuration (bientôt)</a>
+                        <span class="quick-link disabled text-muted"><i class="bi bi-people"></i> Utilisateurs (bientôt)</span>
+                        <span class="quick-link disabled text-muted"><i class="bi bi-graph-up"></i> Rapports (bientôt)</span>
+                        <span class="quick-link disabled text-muted"><i class="bi bi-sliders"></i> Configuration (bientôt)</span>
                     </div>
                 </div>
             </div>
