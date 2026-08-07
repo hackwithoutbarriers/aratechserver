@@ -33,6 +33,19 @@ try {
     $error = 'Impossible de contacter l\'API : ' . $e->getMessage();
 }
 
+// Ventes par jour pour le graphique d'évolution
+$dailySales = [];
+if (!$error) {
+    $dailyUrl = $apiBase . '?route=get-sales-daily&token=' . urlencode($adminToken) . '&start=' . urlencode($startDate) . '&end=' . urlencode($endDate);
+    try {
+        $dailyResponse = file_get_contents($dailyUrl);
+        $dailyData = json_decode($dailyResponse, true);
+        if ($dailyData && ($dailyData['success'] ?? false)) {
+            $dailySales = $dailyData['daily'] ?? [];
+        }
+    } catch (Throwable $e) {}
+}
+
 require __DIR__ . '/header.php';
 ?>
 
@@ -130,6 +143,44 @@ require __DIR__ . '/header.php';
             </div>
         </div>
     <?php endif; ?>
+
+    <?php if (!empty($dailySales)): ?>
+<div class="card card-custom mt-3">
+    <div class="card-header card-header-custom">Évolution du chiffre d'affaires</div>
+    <div class="card-body">
+        <canvas id="dailySalesChart" height="100"></canvas>
+    </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const ctx = document.getElementById('dailySalesChart').getContext('2d');
+    const dailyData = <?= json_encode($dailySales) ?>;
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: dailyData.map(d => d.sale_date),
+            datasets: [{
+                label: 'Chiffre d\'affaires (FCFA)',
+                data: dailyData.map(d => d.total),
+                backgroundColor: 'rgba(245,166,35,0.2)',
+                borderColor: '#f5a623',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.3,
+                pointBackgroundColor: '#0b2c82'
+            }]
+        },
+        options: {
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+});
+</script>
+<?php endif; ?>
 
     <a href="index.php" class="btn btn-outline-secondary mt-3"><i class="bi bi-arrow-left"></i> Retour au tableau de bord</a>
 </div>
