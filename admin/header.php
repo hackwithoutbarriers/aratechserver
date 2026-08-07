@@ -11,6 +11,7 @@ declare(strict_types=1);
     <title><?= $pageTitle ?? 'ARA Tech WiFi Admin' ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         :root { --bleu-nuit: #0b2c82; --orange: #f5a623; }
         body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; padding-bottom: 60px; }
