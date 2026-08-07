@@ -1,36 +1,28 @@
 <?php
 declare(strict_types=1);
-
-require __DIR__ . '/auth.php';          // kicks out non-logged-in users
+require __DIR__ . '/auth.php';   // garde la protection par mot de passe
 $config = require __DIR__ . '/config.php';
 
 // ---------------------------------------------------------------------
-// Minimal Turso helpers (will be moved to a shared lib later)
+// Fonctions Turso (identiques à api.php – on évite la duplication)
 // ---------------------------------------------------------------------
-function turso_pipeline(array $config, array $stmts): array
-{
+function turso_pipeline(array $config, array $stmts): array {
     if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
-        throw new RuntimeException('Turso is not configured.');
+        throw new RuntimeException('Turso non configuré.');
     }
-
     $url   = rtrim($config['turso']['url'], '/') . '/v2/pipeline';
     $token = $config['turso']['token'];
-
     $requests = [];
     foreach ($stmts as $stmt) {
         $requests[] = [
-            'type' => 'execute',
-            'stmt' => [
+            'type'  => 'execute',
+            'stmt'  => [
                 'sql'  => $stmt['sql'],
-                'args' => array_map(
-                    static fn($v) => ['type' => 'text', 'value' => (string)$v],
-                    $stmt['args'] ?? []
-                ),
+                'args' => array_map(fn($v) => ['type' => 'text', 'value' => (string)$v], $stmt['args'] ?? []),
             ],
         ];
     }
     $requests[] = ['type' => 'close'];
-
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_POST           => true,
@@ -42,84 +34,71 @@ function turso_pipeline(array $config, array $stmts): array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 10,
     ]);
-
     $raw  = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $err  = curl_error($ch);
     curl_close($ch);
-
-    if ($raw === false) {
-        throw new RuntimeException("Turso unreachable (cURL: $err).");
-    }
-
+    if ($raw === false) throw new RuntimeException("Turso cURL error: $err");
     $decoded = json_decode($raw, true);
-    if (!is_array($decoded)) {
-        throw new RuntimeException("Invalid Turso response (HTTP $code).");
+    if (!is_array($decoded)) throw new RuntimeException("Turso réponse invalide (HTTP $code)");
+    foreach ($decoded['results'] ?? [] as $r) {
+        if (($r['type']??'') === 'error') throw new RuntimeException('Turso SQL: ' . ($r['error']['message']??'inconnue'));
     }
-
-    foreach ($decoded['results'] ?? [] as $result) {
-        if (($result['type'] ?? '') === 'error') {
-            throw new RuntimeException('Turso SQL error: ' . ($result['error']['message'] ?? 'unknown'));
-        }
-    }
-
     return $decoded['results'] ?? [];
 }
 
-function turso_rows(array $result): array
-{
+function turso_rows(array $result): array {
     $response = $result['response']['result'] ?? [];
     $cols = array_column($response['cols'] ?? [], 'name');
     $rows = [];
-
     foreach ($response['rows'] ?? [] as $row) {
         $assoc = [];
-        foreach ($row as $i => $cell) {
-            $assoc[$cols[$i]] = $cell['value'] ?? null;
-        }
+        foreach ($row as $i => $cell) $assoc[$cols[$i]] = $cell['value'] ?? null;
         $rows[] = $assoc;
     }
-
     return $rows;
 }
 // ---------------------------------------------------------------------
 
-$activeCount = 0;
-$users       = [];       // parsed list of [user, mac, ip]
-$lastTime    = '';
-$error       = '';
+$snapshot = null;
+$error    = '';
 
 try {
-    // DEBUG : fetch latest snapshot without date filter
+    // Lire le snapshot le plus récent, peu importe la date
     $results = turso_pipeline($config, [
         [
-            'sql'  => 'SELECT active_count, users_blob, snapshot_date, snapshot_time
-                       FROM hotspot_snapshots
-                       ORDER BY id DESC
-                       LIMIT 1',
+            'sql'  => 'SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
             'args' => [],
         ]
     ]);
 
-    $snapshotRow = null;
     foreach ($results as $r) {
         if (isset($r['response']['result']['cols'])) {
             $rows = turso_rows($r);
-            if (!empty($rows)) {
-                $snapshotRow = $rows[0];
-            }
+            if (!empty($rows)) $snapshot = $rows[0];
             break;
         }
     }
-
-    if ($snapshotRow) {
-        $activeCount = (int)$snapshotRow['active_count'];
-        $usersBlob   = $snapshotRow['users_blob'] ?? '';
-        $lastTime    = ($snapshotRow['snapshot_date'] ?? '') . ' ' . ($snapshotRow['snapshot_time'] ?? '');
-        // parse users…
-    }
 } catch (Throwable $e) {
     $error = $e->getMessage();
+}
+
+$activeCount = $snapshot ? (int)$snapshot['active_count'] : 0;
+$usersBlob   = $snapshot ? ($snapshot['users_blob'] ?? '') : '';
+$lastDate    = $snapshot ? ($snapshot['snapshot_date'] ?? '') : '';
+$lastTime    = $snapshot ? ($snapshot['snapshot_time'] ?? '') : '';
+
+// Parser la liste des utilisateurs (format : user,mac,ip||user2,mac2,ip2||...)
+$users = [];
+if ($usersBlob !== '') {
+    foreach (explode('||', $usersBlob) as $chunk) {
+        $chunk = trim($chunk);
+        if ($chunk === '') continue;
+        $parts = explode(',', $chunk, 3);
+        if (count($parts) === 3) {
+            $users[] = ['user' => $parts[0], 'mac' => $parts[1], 'ip' => $parts[2]];
+        }
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -146,15 +125,12 @@ try {
     <h2>Hotspot Status</h2>
 
     <?php if ($error): ?>
-        <p><span class="dot offline"></span> Error fetching status</p>
         <p class="error"><?= htmlspecialchars($error) ?></p>
-
-    <?php elseif ($lastTime === ''): ?>
+    <?php elseif (!$snapshot): ?>
         <p><span class="dot offline"></span> No snapshot received yet.</p>
         <p>Waiting for the router to send its first status…</p>
-
     <?php else: ?>
-        <p><span class="dot online"></span> Last snapshot: <strong><?= htmlspecialchars($lastTime) ?></strong></p>
+        <p><span class="dot online"></span> Last snapshot: <strong><?= htmlspecialchars($lastDate . ' ' . $lastTime) ?></strong></p>
         <p>Active hotspot users: <strong><?= $activeCount ?></strong></p>
 
         <?php if (!empty($users)): ?>
