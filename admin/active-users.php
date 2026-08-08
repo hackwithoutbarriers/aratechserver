@@ -1,215 +1,137 @@
 <?php
 declare(strict_types=1);
-require __DIR__ . '/auth.php';
+// Ne pas inclure auth.php ici – la page hôte (hotspot.php) l'a déjà fait.
 require_once __DIR__ . '/../lib/RouterosAPI.php';
+require_once __DIR__ . '/../lib/hotspot.php';
 $config = require __DIR__ . '/../config.php';
 
-// Connexion au routeur
 $hotspot = new Hotspot($config['mikrotik']);
 if (!$hotspot->isConnected()) {
-    die('<div class="alert alert-danger">Connexion au routeur impossible.</div>');
+    echo '<div class="alert alert-danger">Connexion au routeur impossible.</div>';
+    return;
 }
 
 // Actions sur les utilisateurs
 if (isset($_GET['remove-user'])) {
-    $API->comm('/ip/hotspot/user/remove', ['.id' => $_GET['remove-user']]);
-    header('Location: active-users.php');
+    $hotspot->removeUser($_GET['remove-user']);
+    header('Location: hotspot.php?tab=active');
     exit;
 }
 if (isset($_GET['enable-user'])) {
-    $API->comm('/ip/hotspot/user/enable', ['.id' => $_GET['enable-user']]);
-    header('Location: active-users.php');
+    $hotspot->enableUser($_GET['enable-user']);
+    header('Location: hotspot.php?tab=active');
     exit;
 }
 if (isset($_GET['disable-user'])) {
-    $API->comm('/ip/hotspot/user/disable', ['.id' => $_GET['disable-user']]);
-    header('Location: active-users.php');
+    $hotspot->disableUser($_GET['disable-user']);
+    header('Location: hotspot.php?tab=active');
+    exit;
+}
+if (isset($_GET['remove-active'])) {
+    $hotspot->removeActiveSession($_GET['remove-active']);
+    header('Location: hotspot.php?tab=active');
     exit;
 }
 
-// Paramètres
-$session = $_GET['session'] ?? '';
-$serveractive = $_GET['server'] ?? '';
-$prof = $_GET['profile'] ?? 'all';
-$comm = $_GET['comment'] ?? '';
-$exp = $_GET['exp'] ?? '';
+// Onglet "Sessions actives" – accessible via ?tab=active&view=sessions
+$view = $_GET['view'] ?? 'users'; // 'users' ou 'sessions'
 
-// ---- PARTIE 1 : Sessions actives ----
-if (isset($_GET['active'])) {
-    if ($serveractive !== '') {
-        $activeUsers = $API->comm('/ip/hotspot/active/print', ['?server' => $serveractive]);
-        $countActive = $API->comm('/ip/hotspot/active/print', ['count-only' => '', '?server' => $serveractive]);
-    } else {
-        $activeUsers = $API->comm('/ip/hotspot/active/print');
-        $countActive = $API->comm('/ip/hotspot/active/print', ['count-only' => '']);
-    }
-
-    // Affichage sessions actives
+if ($view === 'sessions') {
+    $activeSessions = $hotspot->getActiveSessions();
     ?>
-    <div class="container-fluid mt-4">
-        <h2 class="mb-3"><i class="bi bi-wifi"></i> Sessions actives</h2>
-        <div class="card card-custom">
-            <div class="card-header bg-dark text-white">
-                <h3><?= htmlspecialchars($serveractive ?: 'Tous les serveurs') ?> - <?= $countActive ?> session(s)</h3>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-bordered table-hover text-nowrap mb-0">
-                        <thead>
-                            <tr>
-                                <th>Actions</th>
-                                <th>Serveur</th>
-                                <th>Utilisateur</th>
-                                <th>Adresse IP</th>
-                                <th>MAC</th>
-                                <th>Uptime</th>
-                                <th>Bytes In</th>
-                                <th>Bytes Out</th>
-                                <th>Temps restant</th>
-                                <th>Login By</th>
-                                <th>Commentaire</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        <?php foreach ($activeUsers as $user): 
-                            $id = $user['.id'];
-                            $server = $user['server'] ?? '';
-                            $username = $user['user'] ?? '';
-                            $address = $user['address'] ?? '';
-                            $mac = $user['mac-address'] ?? '';
-                            $uptime = formatDTM($user['uptime'] ?? '');
-                            $bytesi = formatBytes($user['bytes-in'] ?? 0, 2);
-                            $byteso = formatBytes($user['bytes-out'] ?? 0, 2);
-                            $sessionTimeLeft = formatDTM($user['session-time-left'] ?? '');
-                            $loginby = $user['login-by'] ?? '';
-                            $comment = $user['comment'] ?? '';
-                        ?>
-                            <tr>
-                                <td>
-                                    <a href="?active=1&remove=<?= urlencode($id) ?>" class="text-danger" 
-                                       onclick="return confirm('Supprimer la session de <?= htmlspecialchars($username) ?> ?');">
-                                        <i class="bi bi-x-circle"></i>
-                                    </a>
-                                </td>
-                                <td><?= htmlspecialchars($server) ?></td>
-                                <td><?= htmlspecialchars($username) ?></td>
-                                <td><?= htmlspecialchars($address) ?></td>
-                                <td><?= htmlspecialchars($mac) ?></td>
-                                <td class="text-end"><?= $uptime ?></td>
-                                <td class="text-end"><?= $bytesi ?></td>
-                                <td class="text-end"><?= $byteso ?></td>
-                                <td class="text-end"><?= $sessionTimeLeft ?></td>
-                                <td><?= htmlspecialchars($loginby) ?></td>
-                                <td><?= htmlspecialchars($comment) ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        <a href="active-users.php" class="btn btn-outline-secondary mt-3"><i class="bi bi-arrow-left"></i> Tous les utilisateurs</a>
-    </div>
-    <?php
-    exit;
-}
-
-// Gestion suppression session active
-if (isset($_GET['remove'])) {
-    $API->comm('/ip/hotspot/active/remove', ['.id' => $_GET['remove']]);
-    header('Location: active-users.php?active=1');
-    exit;
-}
-
-// ---- PARTIE 2 : Utilisateurs enregistrés ----
-
-// Récupération des utilisateurs selon les filtres
-if ($comm !== '') {
-    $users = $API->comm('/ip/hotspot/user/print', ['?comment' => $comm]);
-} elseif ($exp === '1') {
-    $users = $API->comm('/ip/hotspot/user/print', ['?limit-uptime' => '1s']);
-} elseif ($prof !== 'all') {
-    $users = $API->comm('/ip/hotspot/user/print', ['?profile' => $prof]);
-} else {
-    $users = $API->comm('/ip/hotspot/user/print');
-}
-$totalUsers = count($users);
-
-// Profils disponibles pour le filtre
-$profiles = $API->comm('/ip/hotspot/user/profile/print');
-
-$API->disconnect();
-
-// Helpers (à déplacer dans lib/format.php)
-function formatDTM($seconds) {
-    if (!is_numeric($seconds)) return $seconds;
-    $d = floor($seconds / 86400);
-    $h = floor(($seconds % 86400) / 3600);
-    $m = floor(($seconds % 3600) / 60);
-    $s = $seconds % 60;
-    return ($d > 0 ? $d.'j ' : '') . sprintf('%02d:%02d:%02d', $h, $m, $s);
-}
-function formatBytes($bytes, $precision = 2) {
-    if ($bytes == 0) return '0 B';
-    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    $i = floor(log($bytes, 1024));
-    return round($bytes / pow(1024, $i), $precision) . ' ' . $units[$i];
-}
-?>
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <title>Utilisateurs - ARA Tech WiFi</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
-    <style>
-        :root { --bleu-nuit: #0b2c82; --orange: #f5a623; }
-        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; }
-        .navbar-custom { background: var(--bleu-nuit); }
-        .card-custom { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-        .btn-orange { background: var(--orange); border: none; color: #fff; font-weight: 600; border-radius: 8px; }
-        .btn-orange:hover { background: #e5941f; color: #fff; }
-    </style>
-</head>
-<body>
-<nav class="navbar navbar-custom navbar-dark px-3">
-    <a href="index.php" class="navbar-brand">⚡ ARA Tech WiFi Admin</a>
-    <div class="ms-auto">
-        <a href="logout.php" class="btn btn-outline-light btn-sm">Déconnexion</a>
-    </div>
-</nav>
-
-<div class="container-fluid mt-4">
-    <h2 class="mb-3"><i class="bi bi-people-fill"></i> Utilisateurs</h2>
-    
-    <!-- Barre de filtres -->
-    <div class="row mb-3">
-        <div class="col-md-3">
-            <form method="get" class="input-group">
-                <input type="text" class="form-control" placeholder="Rechercher..." id="filterTable">
-            </form>
-        </div>
-        <div class="col-md-3">
-            <select class="form-select" onchange="location = this.value;">
-                <option value="active-users.php">Tous les profils</option>
-                <?php foreach ($profiles as $p): 
-                    $sel = ($p['name'] === $prof) ? 'selected' : '';
-                ?>
-                <option value="active-users.php?profile=<?= urlencode($p['name']) ?>" <?= $sel ?>><?= htmlspecialchars($p['name']) ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <div class="col-md-3">
-            <a href="active-users.php?active=1" class="btn btn-orange"><i class="bi bi-wifi"></i> Sessions actives</a>
-        </div>
-    </div>
-
     <div class="card card-custom">
         <div class="card-header bg-dark text-white">
-            <h3><?= $totalUsers ?> utilisateur(s)</h3>
+            <h3><i class="bi bi-wifi"></i> Sessions actives (<?= count($activeSessions) ?>)</h3>
         </div>
         <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-bordered table-hover text-nowrap mb-0">
+                    <thead>
+                        <tr>
+                            <th>Actions</th>
+                            <th>Serveur</th>
+                            <th>Utilisateur</th>
+                            <th>Adresse IP</th>
+                            <th>MAC</th>
+                            <th>Uptime</th>
+                            <th>Bytes In</th>
+                            <th>Bytes Out</th>
+                            <th>Temps restant</th>
+                            <th>Login By</th>
+                            <th>Commentaire</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($activeSessions as $s):
+                        $uptime = isset($s['uptime']) ? formatDTM($s['uptime']) : '';
+                        $bytesi = isset($s['bytes-in']) ? formatBytes($s['bytes-in'], 2) : '';
+                        $byteso = isset($s['bytes-out']) ? formatBytes($s['bytes-out'], 2) : '';
+                        $timeLeft = isset($s['session-time-left']) ? formatDTM($s['session-time-left']) : '';
+                    ?>
+                        <tr>
+                            <td>
+                                <a href="hotspot.php?tab=active&view=sessions&remove-active=<?= urlencode($s['.id']) ?>" 
+                                   class="text-danger" onclick="return confirm('Déconnecter <?= htmlspecialchars($s['user'] ?? '') ?> ?');">
+                                    <i class="bi bi-x-circle"></i>
+                                </a>
+                            </td>
+                            <td><?= htmlspecialchars($s['server'] ?? '') ?></td>
+                            <td><?= htmlspecialchars($s['user'] ?? '') ?></td>
+                            <td><?= htmlspecialchars($s['address'] ?? '') ?></td>
+                            <td><?= htmlspecialchars($s['mac-address'] ?? '') ?></td>
+                            <td class="text-end"><?= $uptime ?></td>
+                            <td class="text-end"><?= $bytesi ?></td>
+                            <td class="text-end"><?= $byteso ?></td>
+                            <td class="text-end"><?= $timeLeft ?></td>
+                            <td><?= htmlspecialchars($s['login-by'] ?? '') ?></td>
+                            <td><?= htmlspecialchars($s['comment'] ?? '') ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <?php
+} else {
+    // Onglet "Utilisateurs enregistrés"
+    $profileFilter = $_GET['profile'] ?? 'all';
+    $commentFilter = $_GET['comment'] ?? '';
+    $users = $hotspot->getUsers([
+        'profile' => ($profileFilter !== 'all' ? $profileFilter : ''),
+        'comment' => $commentFilter,
+    ]);
+
+    $profiles = $hotspot->getProfiles();
+    ?>
+    <div class="card card-custom">
+        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+            <h3><i class="bi bi-people-fill"></i> Utilisateurs (<?= count($users) ?>)</h3>
+            <a href="hotspot.php?tab=active&view=sessions" class="btn btn-sm btn-orange"><i class="bi bi-wifi"></i> Sessions actives</a>
+        </div>
+        <div class="card-body p-0">
+            <!-- Filtres rapides -->
+            <form method="get" class="p-2 bg-light border-bottom">
+                <input type="hidden" name="tab" value="active">
+                <div class="row g-2">
+                    <div class="col-md-3">
+                        <select class="form-select form-select-sm" name="profile" onchange="this.form.submit()">
+                            <option value="all">Tous les profils</option>
+                            <?php foreach ($profiles as $p):
+                                $sel = ($p['name'] === $profileFilter) ? 'selected' : '';
+                                echo "<option value=\"{$p['name']}\" $sel>{$p['name']}</option>";
+                            endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" class="form-control form-control-sm" name="comment" placeholder="Filtrer par commentaire" value="<?= htmlspecialchars($commentFilter) ?>">
+                    </div>
+                    <div class="col-md-2">
+                        <button type="submit" class="btn btn-sm btn-orange w-100"><i class="bi bi-funnel"></i> Filtrer</button>
+                    </div>
+                </div>
+            </form>
+
             <div class="table-responsive">
                 <table class="table table-bordered table-hover text-nowrap mb-0">
                     <thead>
@@ -225,29 +147,29 @@ function formatBytes($bytes, $precision = 2) {
                         </tr>
                     </thead>
                     <tbody>
-                    <?php foreach ($users as $u): 
-                        $uid = $u['.id'];
+                    <?php foreach ($users as $u):
+                        $uid = $u['.id'] ?? '';
                         $uname = $u['name'] ?? '';
                         $uprofile = $u['profile'] ?? '';
                         $umac = $u['mac-address'] ?? '';
-                        $uuptime = formatDTM($u['uptime'] ?? '');
-                        $ubytesi = formatBytes($u['bytes-in'] ?? 0, 2);
-                        $ubyteso = formatBytes($u['bytes-out'] ?? 0, 2);
+                        $uuptime = isset($u['uptime']) ? formatDTM($u['uptime']) : '';
+                        $ubytesi = isset($u['bytes-in']) ? formatBytes($u['bytes-in'], 2) : '';
+                        $ubyteso = isset($u['bytes-out']) ? formatBytes($u['bytes-out'], 2) : '';
                         $ucomment = $u['comment'] ?? '';
                         $udisabled = ($u['disabled'] ?? '') === 'true';
                     ?>
                         <tr>
                             <td>
-                                <a href="?remove-user=<?= urlencode($uid) ?>" class="text-danger" 
+                                <a href="hotspot.php?tab=active&remove-user=<?= urlencode($uid) ?>" class="text-danger" 
                                    onclick="return confirm('Supprimer l\'utilisateur <?= htmlspecialchars($uname) ?> ?');">
                                     <i class="bi bi-trash"></i>
                                 </a>
                                 <?php if ($udisabled): ?>
-                                    <a href="?enable-user=<?= urlencode($uid) ?>" class="text-warning" title="Activer">
+                                    <a href="hotspot.php?tab=active&enable-user=<?= urlencode($uid) ?>" class="text-warning" title="Activer">
                                         <i class="bi bi-lock-fill"></i>
                                     </a>
                                 <?php else: ?>
-                                    <a href="?disable-user=<?= urlencode($uid) ?>" title="Désactiver">
+                                    <a href="hotspot.php?tab=active&disable-user=<?= urlencode($uid) ?>" title="Désactiver">
                                         <i class="bi bi-unlock-fill"></i>
                                     </a>
                                 <?php endif; ?>
@@ -266,20 +188,26 @@ function formatBytes($bytes, $precision = 2) {
             </div>
         </div>
     </div>
+    <?php
+}
 
-    <a href="index.php" class="btn btn-outline-secondary mt-3"><i class="bi bi-arrow-left"></i> Retour</a>
-</div>
+$hotspot->disconnect();
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-// Filtre rapide
-document.getElementById('filterTable')?.addEventListener('keyup', function() {
-    const filter = this.value.toUpperCase();
-    const rows = document.querySelectorAll('tbody tr');
-    rows.forEach(row => {
-        row.style.display = row.textContent.toUpperCase().includes(filter) ? '' : 'none';
-    });
-});
-</script>
-</body>
-</html>
+// Helpers de formatage (à remplacer par l'inclusion de lib/format.php plus tard)
+function formatDTM($val) {
+    if (is_string($val)) {
+        $parts = explode(':', $val);
+        if (count($parts) === 3) {
+            $sec = (int)$parts[0]*3600 + (int)$parts[1]*60 + (int)$parts[2];
+        } else return $val;
+    } else $sec = (int)$val;
+    if ($sec < 0) $sec = 0;
+    $d = floor($sec/86400); $h = floor(($sec%86400)/3600); $m = floor(($sec%3600)/60); $s = $sec%60;
+    return ($d>0 ? "{$d}j " : "") . sprintf('%02d:%02d:%02d', $h, $m, $s);
+}
+function formatBytes($bytes, $prec=2) {
+    if ($bytes <= 0) return '0 B';
+    $units = ['B','KB','MB','GB','TB'];
+    $i = floor(log($bytes,1024));
+    return round($bytes/pow(1024,$i), $prec).' '.$units[$i];
+}
