@@ -1053,23 +1053,30 @@ switch ($route) {
             $stmt2 = $pdo->query("SELECT active_count FROM hotspot_snapshots ORDER BY id DESC LIMIT 1");
             $activeSessions = $stmt2->fetchColumn() ?: 0;
 
-            // Abonnements actifs et expirants
-            $nowStr = date('Y-m-d H:i:s');
-            $stmt3 = $pdo->prepare(
-                "SELECT COUNT(*) FROM hotspot_users u
-                 INNER JOIN hotspot_expiry e ON u.username = e.user_id
-                 WHERE e.expiry > ?"
-            );
-            $stmt3->execute([$nowStr]);
-            $activeSubs = (int)$stmt3->fetchColumn();
+    // Abonnements actifs et expirants (gestion robuste si tables absentes)
+$activeSubs = 0;
+$expiringSubs = 0;
+try {
+    $nowStr = date('Y-m-d H:i:s');
+    $stmt3 = $pdo->prepare(
+        "SELECT COUNT(*) FROM hotspot_users u
+         INNER JOIN hotspot_expiry e ON u.username = e.user_id
+         WHERE e.expiry > ?"
+    );
+    $stmt3->execute([$nowStr]);
+    $activeSubs = (int)$stmt3->fetchColumn();
 
-            $stmt4 = $pdo->prepare(
-                "SELECT COUNT(*) FROM hotspot_users u
-                 INNER JOIN hotspot_expiry e ON u.username = e.user_id
-                 WHERE e.expiry BETWEEN ? AND ?"
-            );
-            $stmt4->execute([$nowStr, date('Y-m-d H:i:s', strtotime('+7 days'))]);
-            $expiringSubs = (int)$stmt4->fetchColumn();
+    $stmt4 = $pdo->prepare(
+        "SELECT COUNT(*) FROM hotspot_users u
+         INNER JOIN hotspot_expiry e ON u.username = e.user_id
+         WHERE e.expiry BETWEEN ? AND ?"
+    );
+    $stmt4->execute([$nowStr, date('Y-m-d H:i:s', strtotime('+7 days'))]);
+    $expiringSubs = (int)$stmt4->fetchColumn();
+} catch (Throwable $e) {
+    // Tables manquantes ou synchronisation non effectuée : on garde 0
+    ara_log('dashboard abonnements: ' . $e->getMessage(), $config, 'warning');
+}
 
             // Graphique CA (granularité adaptative)
             if ($period === 'today' || $period === 'yesterday') {
