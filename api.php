@@ -967,7 +967,7 @@ switch ($route) {
         }
         break;
 
-    case 'sync-profiles':
+        case 'sync-profiles':
         require_sync_key($config);
         $payload = get_request_payload();
         $profiles = $payload['profiles'] ?? [];
@@ -984,11 +984,14 @@ switch ($route) {
                 on_login TEXT,
                 address_pool TEXT
             )");
-            $pdo->beginTransaction();
-            $pdo->exec("DELETE FROM hotspot_profiles");
             $stmt = $pdo->prepare(
                 "INSERT INTO hotspot_profiles (profile_name, shared_users, rate_limit, on_login, address_pool)
-                 VALUES (?, ?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT (profile_name) DO UPDATE SET
+                     shared_users = excluded.shared_users,
+                     rate_limit = excluded.rate_limit,
+                     on_login = excluded.on_login,
+                     address_pool = excluded.address_pool"
             );
             foreach ($profiles as $p) {
                 $stmt->execute([
@@ -999,10 +1002,8 @@ switch ($route) {
                     $p['address-pool'] ?? '',
                 ]);
             }
-            $pdo->commit();
             json_response(['success' => true, 'count' => count($profiles)]);
         } catch (Throwable $e) {
-            if (isset($pdo)) $pdo->rollBack();
             ara_log('sync-profiles error: ' . $e->getMessage(), $config, 'error');
             $msg = 'Erreur sync-profiles.';
             if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
