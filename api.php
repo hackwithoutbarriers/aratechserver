@@ -976,6 +976,14 @@ switch ($route) {
         }
         try {
             $pdo = ara_db_supabase();
+            // Création automatique de la table si elle n'existe pas
+            $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_profiles (
+                profile_name TEXT PRIMARY KEY,
+                shared_users INTEGER NOT NULL DEFAULT 1,
+                rate_limit TEXT,
+                on_login TEXT,
+                address_pool TEXT
+            )");
             $pdo->beginTransaction();
             $pdo->exec("DELETE FROM hotspot_profiles");
             $stmt = $pdo->prepare(
@@ -995,7 +1003,10 @@ switch ($route) {
             json_response(['success' => true, 'count' => count($profiles)]);
         } catch (Throwable $e) {
             if (isset($pdo)) $pdo->rollBack();
-            json_error('Erreur sync-profiles: ' . $e->getMessage(), 500);
+            ara_log('sync-profiles error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Erreur sync-profiles.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_error($msg, 500);
         }
         break;
 
