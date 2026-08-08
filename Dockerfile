@@ -1,20 +1,21 @@
 FROM php:8.2-apache
 
-# Installer SQLite
+# Installer SQLite + PostgreSQL
 RUN apt-get update && apt-get install -y \
     libsqlite3-dev \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Extensions PHP
-RUN docker-php-ext-install pdo pdo_sqlite
+RUN docker-php-ext-install pdo pdo_sqlite pdo_pgsql
 
-# Activer mod_rewrite (utile pour d'éventuelles réécritures)
+# Activer mod_rewrite
 RUN a2enmod rewrite
 
-# Copier les fichiers du projet
+# Copier les fichiers
 COPY . /var/www/html/
 
-# Créer une configuration Apache pour bloquer l'accès direct aux fichiers sensibles
+# Blocage des fichiers sensibles
 RUN echo '<FilesMatch "^(config|db|RouterosAPI)\.php$">' \
     > /etc/apache2/conf-available/block-sensitive.conf \
     && echo '    Require all denied' \
