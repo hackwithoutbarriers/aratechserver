@@ -849,6 +849,37 @@ switch ($route) {
             json_error('Erreur sync-profiles: ' . $e->getMessage(), 500);
         }
         break;
+        case 'sync-profiles':
+        require_sync_key($config);
+        $payload = get_request_payload();
+        $profiles = $payload['profiles'] ?? [];
+        if (!is_array($profiles) || empty($profiles)) {
+            json_error('Aucune donnée profil.');
+        }
+        try {
+            $pdo = ara_db_supabase();
+            $pdo->beginTransaction();
+            $pdo->exec("DELETE FROM hotspot_profiles");
+            $stmt = $pdo->prepare(
+                "INSERT INTO hotspot_profiles (profile_name, shared_users, rate_limit, on_login, address_pool)
+                 VALUES (?, ?, ?, ?, ?)"
+            );
+            foreach ($profiles as $p) {
+                $stmt->execute([
+                    $p['name'] ?? '',
+                    (int)($p['shared-users'] ?? 1),
+                    $p['rate-limit'] ?? '',
+                    $p['on-login'] ?? '',
+                    $p['address-pool'] ?? '',
+                ]);
+            }
+            $pdo->commit();
+            json_response(['success' => true, 'count' => count($profiles)]);
+        } catch (Throwable $e) {
+            if (isset($pdo)) $pdo->rollBack();
+            json_error('Erreur sync-profiles: ' . $e->getMessage(), 500);
+        }
+        break;
     
     default:
         json_error('Route inconnue.', 404);
