@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/RouterosAPI.php';
 
 /**
  * Couche d'abstraction Hotspot – ARA Tech WiFi
