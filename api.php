@@ -297,6 +297,154 @@ function normalize_router_date(string $raw): string
     return date('Y-m-d');
 }
 
+// ---------------------------------------------------------------------
+// NOUVELLES FONCTIONS POUR LE DASHBOARD V2.1
+// ---------------------------------------------------------------------
+
+function get_period_dates(string $period, string $customStart = '', string $customEnd = ''): array
+{
+    $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+    switch ($period) {
+        case 'today':
+            $start = $now->setTime(0, 0, 0);
+            $end   = $now;
+            $label = "Aujourd'hui";
+            break;
+        case 'yesterday':
+            $start = $now->modify('-1 day')->setTime(0, 0, 0);
+            $end   = $now->modify('-1 day')->setTime(23, 59, 59);
+            $label = 'Hier';
+            break;
+        case '7days':
+            $start = $now->modify('-6 days')->setTime(0, 0, 0);
+            $end   = $now;
+            $label = '7 derniers jours';
+            break;
+        case 'thismonth':
+            $start = $now->modify('first day of this month')->setTime(0, 0, 0);
+            $end   = $now;
+            $label = 'Ce mois';
+            break;
+        case 'lastmonth':
+            $start = $now->modify('first day of last month')->setTime(0, 0, 0);
+            $end   = $now->modify('last day of last month')->setTime(23, 59, 59);
+            $label = 'Mois précédent';
+            break;
+        case 'custom':
+            if ($customStart && $customEnd) {
+                $start = DateTimeImmutable::createFromFormat('Y-m-d', $customStart, new DateTimeZone('UTC'));
+                $end   = DateTimeImmutable::createFromFormat('Y-m-d', $customEnd, new DateTimeZone('UTC'));
+                if (!$start || !$end) {
+                    json_error('Dates personnalisées invalides.');
+                }
+                $start = $start->setTime(0, 0, 0);
+                $end   = $end->setTime(23, 59, 59);
+                $label = "Du " . $start->format('d/m/Y') . " au " . $end->format('d/m/Y');
+            } else {
+                json_error('Dates personnalisées manquantes.');
+            }
+            break;
+        default:
+            json_error('Période invalide.', 400);
+    }
+    return [
+        'start'      => $start->format('Y-m-d'),
+        'end'        => $end->format('Y-m-d'),
+        'label'      => $label,
+        'start_obj'  => $start,
+        'end_obj'    => $end
+    ];
+}
+
+function get_cached_network_status(array $config): array
+{
+    $cacheFile = __DIR__ . '/cache/network_status.json';
+    $cacheTime = 30; // secondes
+
+    if (file_exists($cacheFile) && (time() - filemtime($cacheFile)) < $cacheTime) {
+        $data = json_decode(file_get_contents($cacheFile), true);
+        if (is_array($data)) return $data;
+    }
+
+    $status = [
+        'internet'    => 'UNKNOWN',
+        'mikrotik'    => 'OFFLINE',
+        'poe_switch'  => 'UNKNOWN',
+        'ap_01'       => 'UNKNOWN',
+        'ap_02'       => 'UNKNOWN',
+    ];
+
+    $api = new RouterosAPI();
+    $api->timeout   = $config['mikrotik']['connect_timeout'] ?? 10;
+    $api->attempts  = $config['mikrotik']['connect_retries'] ?? 3;
+    $port           = $config['mikrotik']['api_port'] ?? 8728;
+    $connected = $api->connect(
+        $config['mikrotik']['host'],
+        $config['mikrotik']['api_user'],
+        $config['mikrotik']['api_password'],
+        $port
+    );
+
+    if ($connected) {
+        $status['mikrotik'] = 'ONLINE';
+        $status['internet'] = 'ONLINE'; // simplification : si le routeur répond, internet OK
+
+        $interfaces = $api->comm('/interface/print');
+        $api->disconnect();
+
+        foreach ($interfaces as $iface) {
+            $name    = $iface['name'] ?? '';
+            $running = ($iface['running'] ?? 'false') === 'true';
+            if (stripos($name, 'poe') !== false && stripos($name, 'ether') !== false) {
+                $status['poe_switch'] = $running ? 'ONLINE' : 'OFFLINE';
+            } elseif (stripos($name, 'wlan') !== false) {
+                if (stripos($name, '1') !== false) {
+                    $status['ap_01'] = $running ? 'ONLINE' : 'OFFLINE';
+                } elseif (stripos($name, '2') !== false) {
+                    $status['ap_02'] = $running ? 'ONLINE' : 'OFFLINE';
+                }
+            }
+        }
+    }
+
+    // Sauvegarde cache
+    @mkdir(dirname($cacheFile), 0755, true);
+    file_put_contents($cacheFile, json_encode($status));
+
+    return $status;
+}
+
+function gather_alerts(array $config, array $networkStatus): array
+{
+    $alerts = [];
+    $now = date('H:i');
+
+    if ($networkStatus['mikrotik'] === 'OFFLINE') {
+        $alerts[] = [
+            'level'       => 'CRITIQUE',
+            'title'       => 'Routeur injoignable',
+            'description' => 'Le routeur MikroTik ne répond pas.',
+            'time'        => $now,
+            'action'      => 'network'
+        ];
+    } else {
+        foreach ($networkStatus as $component => $state) {
+            if ($state === 'OFFLINE') {
+                $alerts[] = [
+                    'level'       => 'CRITIQUE',
+                    'title'       => "$component hors ligne",
+                    'description' => "Le composant $component ne répond pas.",
+                    'time'        => $now,
+                    'action'      => 'network'
+                ];
+            }
+        }
+    }
+
+    // On pourra ajouter plus tard les alertes d'abonnement, de logs...
+    return $alerts;
+}
+
 // ================= ROUTES =================
 
 switch ($route) {
@@ -613,6 +761,7 @@ switch ($route) {
             json_error($msg, 500);
         }
         break;
+
     case '':
         require_admin_token($config);
         $startDate = $_GET['start'] ?? date('Y-m-01');
@@ -681,7 +830,7 @@ switch ($route) {
         }
         break;
 
-        case 'get-sales':
+    case 'get-sales':
         require_admin_token($config);
         $startDate = $_GET['start'] ?? date('Y-m-01');
         $endDate   = $_GET['end']   ?? date('Y-m-d');
@@ -723,8 +872,8 @@ switch ($route) {
             json_error($msg, 500);
         }
         break;
-    
-        case 'get-sales-daily':
+
+    case 'get-sales-daily':
         require_admin_token($config);
         $startDate = $_GET['start'] ?? date('Y-m-01');
         $endDate   = $_GET['end']   ?? date('Y-m-d');
@@ -741,7 +890,7 @@ switch ($route) {
         }
         break;
 
-        case 'push-status':
+    case 'push-status':
         require_sync_key($config);
         $payload = get_request_payload();
         $activeCount = (int)($payload['active'] ?? 0);
@@ -778,8 +927,8 @@ switch ($route) {
             json_error('Erreur lors de l\'enregistrement du statut.', 500);
         }
         break;
-    
-        case 'sync-users':
+
+    case 'sync-users':
         require_sync_key($config);
         $payload = get_request_payload();
         $users = $payload['users'] ?? [];
@@ -818,7 +967,7 @@ switch ($route) {
         }
         break;
 
-        case 'sync-profiles':
+    case 'sync-profiles':
         require_sync_key($config);
         $payload = get_request_payload();
         $profiles = $payload['profiles'] ?? [];
@@ -849,38 +998,154 @@ switch ($route) {
             json_error('Erreur sync-profiles: ' . $e->getMessage(), 500);
         }
         break;
-        case 'sync-profiles':
-        require_sync_key($config);
-        $payload = get_request_payload();
-        $profiles = $payload['profiles'] ?? [];
-        if (!is_array($profiles) || empty($profiles)) {
-            json_error('Aucune donnée profil.');
-        }
+
+    // -----------------------------------------------------------------
+    // NOUVELLE ROUTE : dashboard (V2.1)
+    // -----------------------------------------------------------------
+    case 'dashboard':
+        require_admin_token($config);
+
+        $period      = $_GET['period'] ?? 'thismonth';
+        $customStart = $_GET['start']  ?? '';
+        $customEnd   = $_GET['end']    ?? '';
+        $periodData  = get_period_dates($period, $customStart, $customEnd);
+        $start       = $periodData['start'];
+        $end         = $periodData['end'];
+
+        // Période précédente (pour comparaison)
+        $startObj = $periodData['start_obj'];
+        $endObj   = $periodData['end_obj'];
+        $interval = $startObj->diff($endObj);
+        $days     = $interval->days + 1;
+        $prevEnd  = $startObj->modify('-1 day');
+        $prevStart = $prevEnd->modify("-{$days} days")->modify('+1 day');
+        $prevStartStr = $prevStart->format('Y-m-d');
+        $prevEndStr   = $prevEnd->format('Y-m-d');
+
         try {
             $pdo = ara_db_supabase();
-            $pdo->beginTransaction();
-            $pdo->exec("DELETE FROM hotspot_profiles");
-            $stmt = $pdo->prepare(
-                "INSERT INTO hotspot_profiles (profile_name, shared_users, rate_limit, on_login, address_pool)
-                 VALUES (?, ?, ?, ?, ?)"
+
+            // CA courant et précédent
+            $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM sales_log WHERE sale_date BETWEEN ? AND ?");
+            $stmt->execute([$start, $end]);
+            $currentRevenue = (int)$stmt->fetchColumn();
+
+            $stmt->execute([$prevStartStr, $prevEndStr]);
+            $prevRevenue = (int)$stmt->fetchColumn();
+
+            // Tickets
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM sales_log WHERE sale_date BETWEEN ? AND ?");
+            $stmt->execute([$start, $end]);
+            $currentTickets = (int)$stmt->fetchColumn();
+
+            $stmt->execute([$prevStartStr, $prevEndStr]);
+            $prevTickets = (int)$stmt->fetchColumn();
+
+            // Variations
+            $revenueVar = ($prevRevenue != 0)
+                ? round((($currentRevenue - $prevRevenue) / $prevRevenue) * 100, 1)
+                : 'Nouveau';
+            $ticketsVar = ($prevTickets != 0)
+                ? round((($currentTickets - $prevTickets) / $prevTickets) * 100, 1)
+                : 'Nouveau';
+
+            // Sessions actives (dernier snapshot)
+            $stmt2 = $pdo->query("SELECT active_count FROM hotspot_snapshots ORDER BY id DESC LIMIT 1");
+            $activeSessions = $stmt2->fetchColumn() ?: 0;
+
+            // Abonnements actifs et expirants
+            $nowStr = date('Y-m-d H:i:s');
+            $stmt3 = $pdo->prepare(
+                "SELECT COUNT(*) FROM hotspot_users u
+                 INNER JOIN hotspot_expiry e ON u.username = e.user_id
+                 WHERE e.expiry > ?"
             );
-            foreach ($profiles as $p) {
-                $stmt->execute([
-                    $p['name'] ?? '',
-                    (int)($p['shared-users'] ?? 1),
-                    $p['rate-limit'] ?? '',
-                    $p['on-login'] ?? '',
-                    $p['address-pool'] ?? '',
-                ]);
+            $stmt3->execute([$nowStr]);
+            $activeSubs = (int)$stmt3->fetchColumn();
+
+            $stmt4 = $pdo->prepare(
+                "SELECT COUNT(*) FROM hotspot_users u
+                 INNER JOIN hotspot_expiry e ON u.username = e.user_id
+                 WHERE e.expiry BETWEEN ? AND ?"
+            );
+            $stmt4->execute([$nowStr, date('Y-m-d H:i:s', strtotime('+7 days'))]);
+            $expiringSubs = (int)$stmt4->fetchColumn();
+
+            // Graphique CA (granularité adaptative)
+            if ($period === 'today' || $period === 'yesterday') {
+                $stmt5 = $pdo->prepare(
+                    "SELECT sale_time, SUM(amount) AS total
+                     FROM sales_log
+                     WHERE sale_date = ?
+                     GROUP BY strftime('%H', sale_time)
+                     ORDER BY sale_time"
+                );
+                $stmt5->execute([$start]);
+                $rows = $stmt5->fetchAll();
+                $chart = array_map(function($r) {
+                    return ['label' => substr($r['sale_time'], 0, 5), 'value' => (int)$r['total']];
+                }, $rows);
+            } else {
+                $stmt5 = $pdo->prepare(
+                    "SELECT sale_date, SUM(amount) AS total
+                     FROM sales_log
+                     WHERE sale_date BETWEEN ? AND ?
+                     GROUP BY sale_date
+                     ORDER BY sale_date"
+                );
+                $stmt5->execute([$start, $end]);
+                $rows = $stmt5->fetchAll();
+                $chart = array_map(function($r) {
+                    return ['label' => $r['sale_date'], 'value' => (int)$r['total']];
+                }, $rows);
             }
-            $pdo->commit();
-            json_response(['success' => true, 'count' => count($profiles)]);
+
+            // 5 dernières ventes
+            $stmt6 = $pdo->prepare(
+                "SELECT sale_date, sale_time, username, profile, amount
+                 FROM sales_log
+                 WHERE sale_date BETWEEN ? AND ?
+                 ORDER BY sale_date DESC, sale_time DESC
+                 LIMIT 5"
+            );
+            $stmt6->execute([$start, $end]);
+            $recentSales = $stmt6->fetchAll();
+
+            // Réseau (avec cache de 30 secondes)
+            $network = get_cached_network_status($config);
+
+            // Alertes
+            $alerts = gather_alerts($config, $network);
+
+            json_response([
+                'success'       => true,
+                'period'        => [
+                    'start' => $start,
+                    'end'   => $end,
+                    'label' => $periodData['label'],
+                ],
+                'kpis'          => [
+                    'revenue'                => $currentRevenue,
+                    'previous_revenue'       => $prevRevenue,
+                    'revenue_variation'      => $revenueVar,
+                    'tickets_sold'           => $currentTickets,
+                    'previous_tickets_sold'  => $prevTickets,
+                    'tickets_variation'      => $ticketsVar,
+                    'active_sessions'        => $activeSessions,
+                    'active_subscriptions'   => $activeSubs,
+                    'expiring_subscriptions' => $expiringSubs,
+                ],
+                'revenue_chart' => $chart,
+                'recent_sales'  => $recentSales,
+                'network'       => $network,
+                'alerts'        => $alerts,
+            ]);
         } catch (Throwable $e) {
-            if (isset($pdo)) $pdo->rollBack();
-            json_error('Erreur sync-profiles: ' . $e->getMessage(), 500);
+            ara_log('dashboard error: ' . $e->getMessage(), $config, 'error');
+            json_error('Erreur lors de la récupération des données du tableau de bord.', 500);
         }
         break;
-    
+
     default:
         json_error('Route inconnue.', 404);
 }
