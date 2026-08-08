@@ -196,7 +196,7 @@ function ara_db_supabase(): PDO
     $port     = '5432';
     $dbname   = 'postgres';
     $user     = 'postgres';
-    $password = 'TON_MOT_DE_PASSE';   // ← mets le vrai mot de passe ici
+    $password = 'Zj+Mkfa-Xjgku*4Dieu100%';   // ← mets le vrai mot de passe ici
 
     $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
     $pdo = new PDO($dsn, $user, $password, [
