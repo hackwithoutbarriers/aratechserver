@@ -649,8 +649,9 @@ switch ($route) {
                 'sales'         => $salesDetails,
             ]);
         } catch (Throwable $e) {
-            ara_log('api.php Get-sales error: ' . $e->getMessage(), $config, 'error');
-            json_error('Erreur lors de la récupération des ventes.', 500);
+            $msg = 'Erreur get-sales : ' . $e->getMessage();
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_error($msg, 500);
         }
         break;
 
