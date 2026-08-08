@@ -192,11 +192,12 @@ function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, str
  */
 function ara_db_supabase(): PDO
 {
-    $host     = 'db.pqmmuaavceftkovzrhyg.supabase.co';
-    $port     = '5432';
+    // Test avec les valeurs exactes du pooler
+    $host     = 'aws-1-eu-west-1.pooler.supabase.com';
+    $port     = '6543';
     $dbname   = 'postgres';
-    $user     = 'postgres';
-    $password = 'Zj+Mkfa-Xjgku*4Dieu100%';   // ← mets le vrai mot de passe ici
+    $user     = 'postgres.pqmmuaavceftkovzrhyg';
+    $password = 'Zj+Mkfa-Xjgku*4Dieu100%';  
 
     $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
     $pdo = new PDO($dsn, $user, $password, [
