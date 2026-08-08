@@ -5,15 +5,9 @@ require_once __DIR__ . '/../lib/RouterosAPI.php';
 $config = require __DIR__ . '/../config.php';
 
 // Connexion au routeur
-$API = new RouterosAPI();
-$connected = $API->connect(
-    $config['mikrotik']['host'],
-    $config['mikrotik']['api_user'],
-    $config['mikrotik']['api_password'],
-    (int)$config['mikrotik']['api_port']
-);
-if (!$connected) {
-    die('<div class="alert alert-danger">Impossible de se connecter au routeur.</div>');
+$hotspot = new Hotspot($config['mikrotik']);
+if (!$hotspot->isConnected()) {
+    die('<div class="alert alert-danger">Connexion au routeur impossible.</div>');
 }
 
 // Actions sur les utilisateurs
