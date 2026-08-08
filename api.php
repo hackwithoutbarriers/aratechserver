@@ -613,7 +613,7 @@ switch ($route) {
             json_error($msg, 500);
         }
         break;
-    case 'get-sales':
+    case '':
         require_admin_token($config);
         $startDate = $_GET['start'] ?? date('Y-m-01');
         $endDate   = $_GET['end']   ?? date('Y-m-d');
@@ -680,7 +680,50 @@ switch ($route) {
         }
         break;
 
-    case 'get-sales-daily':
+        case 'get-sales':
+        require_admin_token($config);
+        $startDate = $_GET['start'] ?? date('Y-m-01');
+        $endDate   = $_GET['end']   ?? date('Y-m-d');
+
+        try {
+            $pdo = ara_db_supabase();
+
+            // CA total
+            $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) AS total_ca FROM sales_log WHERE sale_date BETWEEN ? AND ?");
+            $stmt->execute([$startDate, $endDate]);
+            $totalCA = (int)$stmt->fetchColumn();
+
+            // Nombre de tickets
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM sales_log WHERE sale_date BETWEEN ? AND ?");
+            $stmt->execute([$startDate, $endDate]);
+            $totalTickets = (int)$stmt->fetchColumn();
+
+            // Par profil
+            $stmt = $pdo->prepare("SELECT profile, COUNT(*) AS nb, COALESCE(SUM(amount),0) AS ca FROM sales_log WHERE sale_date BETWEEN ? AND ? GROUP BY profile ORDER BY ca DESC");
+            $stmt->execute([$startDate, $endDate]);
+            $profileStats = $stmt->fetchAll();
+
+            // Dernières ventes
+            $stmt = $pdo->prepare("SELECT sale_date, sale_time, username, profile, amount FROM sales_log WHERE sale_date BETWEEN ? AND ? ORDER BY sale_date DESC, sale_time DESC LIMIT 200");
+            $stmt->execute([$startDate, $endDate]);
+            $salesDetails = $stmt->fetchAll();
+
+            json_response([
+                'success'       => true,
+                'total_ca'      => $totalCA,
+                'total_tickets' => $totalTickets,
+                'profile_stats' => $profileStats,
+                'sales'         => $salesDetails,
+            ]);
+        } catch (Throwable $e) {
+            ara_log('api.php Get-sales error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Erreur lors de la récupération des ventes.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_error($msg, 500);
+        }
+        break;
+    
+        case 'get-sales-daily':
         require_admin_token($config);
         $startDate = $_GET['start'] ?? date('Y-m-01');
         $endDate   = $_GET['end']   ?? date('Y-m-d');
@@ -691,7 +734,9 @@ switch ($route) {
             $daily = $stmt->fetchAll();
             json_response(['success' => true, 'daily' => $daily]);
         } catch (Throwable $e) {
-            json_error('Erreur get-sales-daily: ' . $e->getMessage(), 500);
+            $msg = 'Erreur get-sales-daily: ' . $e->getMessage();
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_error($msg, 500);
         }
         break;
 
