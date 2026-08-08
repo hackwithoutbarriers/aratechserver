@@ -1,167 +1,108 @@
 <?php
 declare(strict_types=1);
-require __DIR__ . '/auth.php';
+// Ce fichier est inclus par hotspot.php (auth.php déjà chargé)
 require_once __DIR__ . '/../lib/RouterosAPI.php';
+require_once __DIR__ . '/../lib/voucher.php';
 $config = require __DIR__ . '/../config.php';
 
-// Récupération des paramètres
-$id      = $_GET['id']    ?? '';
-$qr      = $_GET['qr']    ?? 'yes';  // afficher QR code par défaut
-$small   = $_GET['small'] ?? '';
-$userp   = $_GET['user']  ?? '';     // ex: vc-xxx ou up-xxx
-
-// Connexion au routeur
-$API = new RouterosAPI();
-$connected = $API->connect(
-    $config['mikrotik']['host'],
-    $config['mikrotik']['api_user'],
-    $config['mikrotik']['api_password'],
-    (int)$config['mikrotik']['api_port']
-);
-if (!$connected) {
-    die('<div class="alert alert-danger">Impossible de se connecter au routeur.</div>');
+$voucher = new Voucher($config['mikrotik']);
+if (!$voucher->isConnected()) {
+    echo '<div class="alert alert-danger">Connexion au routeur impossible.</div>';
+    return;
 }
 
-// Récupération du nom du hotspot et du DNS (peut être mis en cache dans config)
-$identity = $API->comm('/system/identity/print');
-$hotspotname = $identity[0]['name'] ?? 'ARA Tech WiFi';
+// Paramètres de sélection
+$comment = $_GET['comment'] ?? '';
+$action  = $_GET['act'] ?? 'list'; // list ou print
 
-// Récupération du DNS name du hotspot (pour l'URL de connexion)
-$dnsname = '';
-$hotspotServers = $API->comm('/ip/hotspot/print');
-if (!empty($hotspotServers)) {
-    $dnsname = $hotspotServers[0]['dns-name'] ?? '';
-}
-if (empty($dnsname)) {
-    $dnsname = 'wifi.aratech.local'; // fallback
-}
-
-// Récupération des utilisateurs concernés
+// Si un commentaire est fourni, on récupère les utilisateurs correspondants
 $users = [];
-if ($userp !== '') {
-    // Format vc-xxx ou up-xxx-username
-    $parts = explode('-', $userp);
-    $mode = $parts[0];
-    $username = end($parts);
-    // Si plus de 3 segments, l'avant-dernier peut être un préfixe
-    if (count($parts) == 3) {
-        $username = $parts[1] . '-' . $parts[2];
-    }
-    $response = $API->comm('/ip/hotspot/user/print', ['?name' => $username]);
-    $users = $response;
-} elseif ($id !== '') {
-    // $id correspond au commentaire (ex: vc-xxx)
-    $response = $API->comm('/ip/hotspot/user/print', ['?comment' => $id, '?uptime' => '0s']);
-    $users = $response;
+if ($comment !== '') {
+    $users = $voucher->getUsersByComment($comment);
 }
 
-// Si on a des utilisateurs, on récupère les infos du profil
-$profile = null;
-if (!empty($users)) {
-    $profileName = $users[0]['profile'] ?? '';
-    if ($profileName) {
-        $profileResponse = $API->comm('/ip/hotspot/user/profile/print', ['?name' => $profileName]);
-        $profile = $profileResponse[0] ?? null;
-    }
+// Gestion de l'impression directe (nouvelle fenêtre)
+if ($action === 'print' && !empty($users)) {
+    // Récupérer le profil pour les infos (valable pour tout le lot)
+    $profile = $voucher->getProfileForUser($users[0]);
+    ?>
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <title>Impression des vouchers</title>
+        <script src="../js/qrious.min.js"></script>
+        <style>
+            body { font-family: 'Helvetica', Arial, sans-serif; margin: 0; }
+            @media print { table { page-break-after: auto; } tr { page-break-inside: avoid; } }
+            table.voucher { display: inline-block; border: 2px solid black; margin: 2px; }
+            .qrcode { height:80px; width:80px; }
+        </style>
+    </head>
+    <body onload="window.print()">
+        <?php
+        foreach ($users as $i => $user) {
+            $data = $voucher->prepareVoucherData($user, $profile);
+            $num = $i + 1;
+            // Template standard
+            include __DIR__ . '/../vouchers/template.php';
+        }
+        ?>
+    </body>
+    </html>
+    <?php
+    exit;
 }
 
-// Extraire les infos depuis le profil (si disponible)
-$validity = $profile ? (explode(',', $profile['on-login'] ?? '')[3] ?? '') : '';
-$getprice = $profile ? (explode(',', $profile['on-login'] ?? '')[2] ?? '0') : '0';
-$getsprice = $profile ? (explode(',', $profile['on-login'] ?? '')[4] ?? '0') : '0';
-
-// Devise et formatage (on peut utiliser FCFA par défaut)
-$currency = 'FCFA';
-$price = '';
-if ($getsprice != '0' && $getsprice != '') {
-    $price = number_format((float)$getsprice, 0, ',', ' ') . ' ' . $currency;
-} elseif ($getprice != '0' && $getprice != '') {
-    $price = number_format((float)$getprice, 0, ',', ' ') . ' ' . $currency;
-}
-
-// Logo
-$logo = "../img/logo.png"; // à personnaliser
-
-// --- Affichage (impression) ---
-?>
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <title>Vouchers - <?= htmlspecialchars($hotspotname) ?></title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" href="../img/favicon.png">
-    <script src="../js/qrious.min.js"></script>
-    <style>
-        body {
-            color: #000;
-            background: #fff;
-            font-size: 14px;
-            font-family: 'Helvetica', Arial, sans-serif;
-            margin: 0;
-            -webkit-print-color-adjust: exact;
-        }
-        table.voucher {
-            display: inline-block;
-            border: 2px solid black;
-            margin: 2px;
-        }
-        @page {
-            size: auto;
-            margin: 7mm 3mm 9mm 3mm;
-        }
-        @media print {
-            table { page-break-after: auto; }
-            tr    { page-break-inside: avoid; }
-        }
-        .qrcode { height:80px; width:80px; }
-        .no-print { margin: 10px; }
-    </style>
-</head>
-<body onload="window.print()">
-
-<?php foreach ($users as $i => $user): 
-    $username   = $user['name'] ?? '';
-    $password   = $user['password'] ?? '';
-    $profile    = $user['profile'] ?? '';
-    $timelimit  = $user['limit-uptime'] ?? '';
-    $datalimitBytes = $user['limit-bytes-total'] ?? 0;
-    $datalimit  = $datalimitBytes ? formatBytes($datalimitBytes, 2) : '';
-    $comment    = $user['comment'] ?? '';
-    $uid        = str_replace('=', '', base64_encode($user['.id'] ?? ''));
-    $urilogin   = "http://$dnsname/login?username=$username&password=$password";
-    $qrcode     = "<canvas class='qrcode' id='$uid'></canvas>
-                    <script>
-                    (function() {
-                        new QRious({
-                            element: document.getElementById('$uid'),
-                            value: '$urilogin',
-                            size: 256
-                        });
-                    })();
-                    </script>";
-    $num = $i + 1;
-
-    // Déterminer le mode (vc ou up) en fonction du commentaire
-    $ucode = substr($comment, 0, 2);
-    $usermode = ($ucode === 'vc' || $ucode === 'up') ? $ucode : 'up';
-
-    // Choix du template
-    if ($userp !== '' && $small !== 'yes') {
-        // Template thermal (utilisé pour un utilisateur spécifique)
-        include __DIR__ . '/../vouchers/template-thermal.php';
-    } elseif ($small === 'yes') {
-        include __DIR__ . '/../vouchers/template-small.php';
-    } else {
-        include __DIR__ . '/../vouchers/template.php';
-    }
-endforeach; 
+// Affichage normal : sélection du commentaire et boutons
+$voucher->disconnect();
 ?>
 
-<!-- Bouton pour revenir (avant impression) -->
-<div class="no-print">
-    <button onclick="window.print()" class="btn btn-primary">Imprimer</button>
-    <a href="index.php" class="btn btn-secondary">Retour</a>
+<div class="card card-custom">
+    <div class="card-header bg-dark text-white">
+        <h3><i class="bi bi-ticket-perforated"></i> Vouchers</h3>
+    </div>
+    <div class="card-body">
+        <form method="get" class="row g-2 align-items-end">
+            <input type="hidden" name="tab" value="vouchers">
+            <div class="col-md-4">
+                <label class="form-label">Code commentaire (ex: vc-xxxx)</label>
+                <input type="text" class="form-control" name="comment" value="<?= htmlspecialchars($comment) ?>" required>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-orange w-100"><i class="bi bi-search"></i> Afficher</button>
+            </div>
+            <?php if (!empty($users)): ?>
+            <div class="col-md-3">
+                <a href="hotspot.php?tab=vouchers&comment=<?= urlencode($comment) ?>&act=print" 
+                   class="btn btn-primary w-100" target="_blank">
+                    <i class="bi bi-printer"></i> Imprimer tout
+                </a>
+            </div>
+            <?php endif; ?>
+        </form>
+
+        <?php if ($comment !== '' && empty($users)): ?>
+            <div class="alert alert-info mt-3">Aucun voucher trouvé avec ce commentaire (ou déjà utilisés).</div>
+        <?php elseif (!empty($users)): ?>
+            <div class="mt-3">
+                <p><?= count($users) ?> voucher(s) trouvé(s).</p>
+                <div class="table-responsive">
+                    <table class="table table-bordered table-hover">
+                        <thead><tr><th>Utilisateur</th><th>Profil</th><th>Mot de passe</th><th>Commentaire</th></tr></thead>
+                        <tbody>
+                        <?php foreach ($users as $u): ?>
+                            <tr>
+                                <td><?= htmlspecialchars($u['name'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($u['profile'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($u['password'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($u['comment'] ?? '') ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <?php endif; ?>
+    </div>
 </div>
-</body>
-</html>
