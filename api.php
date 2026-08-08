@@ -779,6 +779,77 @@ switch ($route) {
         }
         break;
     
+        case 'sync-users':
+        require_sync_key($config);
+        $payload = get_request_payload();
+        $users = $payload['users'] ?? [];
+        if (!is_array($users) || empty($users)) {
+            json_error('Aucune donnée utilisateur.');
+        }
+        try {
+            $pdo = ara_db_supabase();
+            // Insertion/update en batch (on peut vider la table avant ou faire un upsert)
+            $pdo->beginTransaction();
+            // Vider la table pour refléter l'état exact du routeur (optionnel)
+            $pdo->exec("DELETE FROM hotspot_users");
+            $stmt = $pdo->prepare(
+                "INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            );
+            foreach ($users as $u) {
+                $stmt->execute([
+                    $u['name'] ?? '',
+                    $u['password'] ?? '',
+                    $u['profile'] ?? '',
+                    $u['mac-address'] ?? '',
+                    $u['comment'] ?? '',
+                    ($u['disabled'] ?? 'false') === 'true' ? 'true' : 'false',
+                    (int)($u['bytes-in'] ?? 0),
+                    (int)($u['bytes-out'] ?? 0),
+                    $u['uptime'] ?? '',
+                    $u['server'] ?? '',
+                ]);
+            }
+            $pdo->commit();
+            json_response(['success' => true, 'count' => count($users)]);
+        } catch (Throwable $e) {
+            if (isset($pdo)) $pdo->rollBack();
+            json_error('Erreur sync-users: ' . $e->getMessage(), 500);
+        }
+        break;
+
+        case 'sync-profiles':
+        require_sync_key($config);
+        $payload = get_request_payload();
+        $profiles = $payload['profiles'] ?? [];
+        if (!is_array($profiles) || empty($profiles)) {
+            json_error('Aucune donnée profil.');
+        }
+        try {
+            $pdo = ara_db_supabase();
+            $pdo->beginTransaction();
+            $pdo->exec("DELETE FROM hotspot_profiles");
+            $stmt = $pdo->prepare(
+                "INSERT INTO hotspot_profiles (profile_name, shared_users, rate_limit, on_login, address_pool)
+                 VALUES (?, ?, ?, ?, ?)"
+            );
+            foreach ($profiles as $p) {
+                $stmt->execute([
+                    $p['name'] ?? '',
+                    (int)($p['shared-users'] ?? 1),
+                    $p['rate-limit'] ?? '',
+                    $p['on-login'] ?? '',
+                    $p['address-pool'] ?? '',
+                ]);
+            }
+            $pdo->commit();
+            json_response(['success' => true, 'count' => count($profiles)]);
+        } catch (Throwable $e) {
+            if (isset($pdo)) $pdo->rollBack();
+            json_error('Erreur sync-profiles: ' . $e->getMessage(), 500);
+        }
+        break;
+    
     default:
         json_error('Route inconnue.', 404);
 }
