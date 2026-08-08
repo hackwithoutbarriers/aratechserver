@@ -55,13 +55,11 @@ declare(strict_types=1);
             <ul class="nav flex-wrap">
                 <li class="nav-item"><a class="nav-link" href="index.php"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
                 <li class="nav-item"><a class="nav-link" href="status.php"><i class="bi bi-wifi"></i> Statut</a></li>
+                <li class="nav-item"><a class="nav-link" href="hotspot.php"><i class="bi bi-people"></i> Hotspot</a></li>
                 <li class="nav-item"><a class="nav-link" href="ads.php"><i class="bi bi-megaphone"></i> Annonces</a></li>
                 <li class="nav-item"><a class="nav-link" href="logs.php"><i class="bi bi-journal-text"></i> Logs</a></li>
-                <li class="nav-item"><a class="nav-link" href="users.php"><i class="bi bi-people"></i> Utilisateurs</a></li>
                 <li class="nav-item"><a class="nav-link" href="reports.php"><i class="bi bi-graph-up"></i> Rapports</a></li>
                 <li class="nav-item"><a class="nav-link" href="settings.php"><i class="bi bi-sliders"></i> Configuration</a></li>
-                <li class="nav-item"><a class="nav-link" href="profiles.php"><i class="bi bi-pie-chart"></i> Profils</a></li>
-                <li class="nav-item"><a class="nav-link" href="active-users.php"><i class="bi bi-people-fill"></i> Utilisateurs actifs</a></li>
                 <li class="nav-item"><a class="nav-link" href="vouchers.php"><i class="bi bi-ticket-perforated"></i> Vouchers</a></li>
                 <li class="nav-item"><a class="nav-link" href="traffic.php"><i class="bi bi-graph-up-arrow"></i> Trafic</a></li>
             </ul>
