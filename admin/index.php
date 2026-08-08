@@ -239,9 +239,7 @@ function updateKPIs(kpis) {
     document.getElementById('kpi-subs').textContent = kpis.active_subscriptions;
     const expiringEl = document.getElementById('kpi-subs-expiring');
     expiringEl.textContent = kpis.expiring_subscriptions > 0 ? `${kpis.expiring_subscriptions} expire(nt) bientôt` : '';
-
-    // État réseau global (basé sur le KPI, mais on le mettra à jour plus tard via le détail)
-    document.getElementById('kpi-network').textContent = kpis.active_sessions >= 0 ? 'ONLINE' : 'OFFLINE'; // temporaire
+    // Le réseau est mis à jour séparément par updateNetwork()
 }
 
 function updateChart(chartData) {
@@ -304,7 +302,7 @@ function updateNetwork(network) {
         `;
         container.appendChild(col);
     }
-    // Mise à jour de l'état global dans le KPI réseau
+    // Mise à jour du KPI réseau
     const globalState = network.mikrotik === 'ONLINE' ? 'ONLINE' : 'OFFLINE';
     document.getElementById('kpi-network').textContent = globalState;
 }
@@ -346,4 +344,5 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 
-<?php require __DIR__ . '/footer.php'; ?>
+</body>
+</html>
