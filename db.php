@@ -192,19 +192,16 @@ function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, str
  */
 function ara_db_supabase(): PDO
 {
-    $host     = getenv('SUPABASE_PGHOST')     ?: 'aws-0-eu-west-3.pooler.supabase.com';
-    $port     = getenv('SUPABASE_PGPORT')     ?: '6543';
-    $dbname   = getenv('SUPABASE_PGDATABASE') ?: 'postgres';
-    $user     = getenv('SUPABASE_PGUSER')     ?: '';
-    $password = getenv('SUPABASE_PGPASSWORD') ?: '';
+    $host     = 'db.pqmmuaavceftkovzrhyg.supabase.co';
+    $port     = '5432';
+    $dbname   = 'postgres';
+    $user     = 'postgres';
+    $password = 'TON_MOT_DE_PASSE';   // ← mets le vrai mot de passe ici
 
     $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
     $pdo = new PDO($dsn, $user, $password, [
         PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
-
-    // Activer le mode WAL-like (non nécessaire, mais on définit quelques paramètres)
-    $pdo->exec("SET statement_timeout = '10s'");
     return $pdo;
 }
