@@ -1,14 +1,14 @@
 <?php
 declare(strict_types=1);
-require __DIR__ . '/auth.php';                // protection admin
 require_once __DIR__ . '/../lib/RouterosAPI.php';
-$config = require __DIR__ . '/../config.php';
 require_once __DIR__ . '/../lib/hotspot.php';
+$config = require __DIR__ . '/../config.php';
 
 // Connexion au routeur
 $hotspot = new Hotspot($config['mikrotik']);
 if (!$hotspot->isConnected()) {
-    die('<div class="alert alert-danger">Connexion au routeur impossible.</div>');
+    echo '<div class="alert alert-danger">Connexion au routeur impossible.</div>';
+    return;
 }
 
 // ---- Gestion des actions (add, edit, delete) ----
@@ -16,115 +16,66 @@ $action = $_GET['action'] ?? 'list';
 $profileId = $_GET['id'] ?? null;
 
 if ($action === 'delete' && $profileId) {
-    // Suppression d'un profil
-    $API->comm('/ip/hotspot/user/profile/remove', ['.id' => $profileId]);
-    // Supprimer aussi le scheduler associé si nécessaire
-    $API->comm('/system/scheduler/remove', ['.id' => $profileId]); // optionnel
-    header('Location: profiles.php');
+    $hotspot->removeProfile($profileId);
+    // Supprimer aussi le scheduler associé (par précaution)
+    $hotspot->removeProfileScheduler($profileId);
+    header('Location: hotspot.php?tab=profiles');
     exit;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Ajout ou édition
+    // Récupération des paramètres communs
     $name = preg_replace('/\s+/', '-', $_POST['name']);
-    $sharedusers = $_POST['sharedusers'] ?? '1';
-    $ratelimit = $_POST['ratelimit'] ?? '';
-    $expmode = $_POST['expmode'] ?? '0';
-    $validity = $_POST['validity'] ?? '';
-    $price = $_POST['price'] ?? '0';
-    $sprice = $_POST['sprice'] ?? '0';
-    $addrpool = $_POST['ppool'] ?? 'none';
-    $lock = ($_POST['lockunlock'] ?? 'Disable') === 'Enable' ? '; ...' : ''; // à adapter
-    $parent = $_POST['parent'] ?? 'none';
+    $params = [
+        'name' => $name,
+        'address-pool' => $_POST['ppool'] ?? 'none',
+        'rate-limit' => $_POST['ratelimit'] ?? '',
+        'shared-users' => $_POST['sharedusers'] ?? '1',
+        'status-autorefresh' => '1m',
+        'parent-queue' => $_POST['parent'] ?? 'none',
+        'on-login' => ':put (",' . ($_POST['expmode'] ?? '0') . ',' . ($_POST['price'] ?? '0') . ',' . ($_POST['validity'] ?? '') . ',' . ($_POST['sprice'] ?? '0') . ',,' . (($_POST['lockunlock'] ?? 'Disable') === 'Enable' ? 'Enable' : 'Disable') . ',");',
+    ];
 
-    // Construction des scripts on-login et bgservice (conservé depuis Mikhmon, simplifié)
-    $record = ''; // on ne fait plus d'enregistrement de script (l'expiration est gérée autrement)
-    $onlogin = ':put (",'.$expmode.',' . $price . ',' . $validity . ','.$sprice.',,' . ($lock ? 'Enable' : 'Disable') . ',");'; // script simplifié
-
-    // Ajout ou modification
     if ($action === 'add') {
-        $API->comm('/ip/hotspot/user/profile/add', [
-            'name' => $name,
-            'address-pool' => $addrpool,
-            'rate-limit' => $ratelimit,
-            'shared-users' => $sharedusers,
-            'status-autorefresh' => '1m',
-            'on-login' => $onlogin,
-            'parent-queue' => $parent,
-        ]);
+        $hotspot->addProfile($params);
     } elseif ($action === 'edit' && $profileId) {
-        $API->comm('/ip/hotspot/user/profile/set', [
-            '.id' => $profileId,
-            'name' => $name,
-            'address-pool' => $addrpool,
-            'rate-limit' => $ratelimit,
-            'shared-users' => $sharedusers,
-            'status-autorefresh' => '1m',
-            'on-login' => $onlogin,
-            'parent-queue' => $parent,
-        ]);
+        $params['.id'] = $profileId;
+        $hotspot->setProfile($profileId, $params);
     }
 
+    header('Location: hotspot.php?tab=profiles');
     exit;
 }
 
 // ---- Récupération des données pour l'affichage ----
-$profiles = $API->comm('/ip/hotspot/user/profile/print');
-$TotalReg = count($profiles);
-$countprofile = $API->comm('/ip/hotspot/user/profile/print', ['count-only' => '']);
+$profiles = $hotspot->getProfiles();
+$countprofile = count($profiles);
 
 // Pour le formulaire d'édition
 $editProfile = null;
 if ($action === 'edit' && $profileId) {
-    $getprofile = $API->comm('/ip/hotspot/user/profile/print', ['.id' => $profileId]);
-    if (!empty($getprofile)) {
-        $editProfile = $getprofile[0];
-    }
+    $editProfile = $hotspot->getProfile($profileId);
 }
 
-$API->disconnect();
+// Pools IP et queues pour les listes déroulantes
+$pools = $hotspot->getIpPools();
+$queues = $hotspot->getStaticQueues();
+$hotspot->disconnect();
 ?>
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <title>Profils - ARA Tech WiFi</title>
-    <!-- Intégration du header commun plus tard -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
-    <style>
-        :root { --bleu-nuit: #0b2c82; --orange: #f5a623; }
-        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; }
-        .navbar-custom { background: var(--bleu-nuit); }
-        .card-custom { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-        .btn-orange { background: var(--orange); border: none; color: #fff; font-weight: 600; border-radius: 8px; }
-        .btn-orange:hover { background: #e5941f; color: #fff; }
-    </style>
-</head>
-<body>
-<nav class="navbar navbar-custom navbar-dark px-3">
-    <a href="index.php" class="navbar-brand">⚡ ARA Tech WiFi Admin</a>
-    <div class="ms-auto">
-        <a href="logout.php" class="btn btn-outline-light btn-sm">Déconnexion</a>
+
+<!-- Affichage de la liste -->
+<div class="card card-custom">
+    <div class="card-header bg-dark text-white">
+        <h3><i class="bi bi-pie-chart"></i> Profils 
+            &nbsp; | &nbsp; <a href="hotspot.php?tab=profiles&action=add" class="btn btn-sm btn-orange"><i class="bi bi-plus-circle"></i> Ajouter</a>
+        </h3>
     </div>
-</nav>
-
-<div class="container-fluid mt-4">
-    <h2 class="mb-3">📋 Profils utilisateurs</h2>
-
-    <!-- Liste des profils -->
-    <div class="card card-custom">
-        <div class="card-header bg-dark text-white">
-            <h3><i class="bi bi-pie-chart"></i> Profils 
-                &nbsp; | &nbsp; <a href="profiles.php?action=add" class="btn btn-sm btn-orange"><i class="bi bi-plus-circle"></i> Ajouter</a>
-            </h3>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-bordered table-hover text-nowrap mb-0">
-                    <thead>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-bordered table-hover text-nowrap mb-0">
+                <thead>
                     <tr>
-                        <th style="min-width:50px;" class="text-center"><?= $countprofile ?> profil(s)</th>
+                        <th class="text-center"><?= $countprofile ?> profil(s)</th>
                         <th>Nom</th>
                         <th>Utilisateurs partagés</th>
                         <th>Rate Limit</th>
@@ -134,102 +85,134 @@ $API->disconnect();
                         <th class="text-right">Prix de vente (FCFA)</th>
                         <th>Verrouillage</th>
                     </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($profiles as $prof): 
-                        $pid = $prof['.id'];
-                        $pname = $prof['name'];
-                        $psharedu = $prof['shared-users'] ?? '';
-                        $pratelimit = $prof['rate-limit'] ?? '';
-                        $ponlogin = $prof['on-login'] ?? '';
-                        // Extraire les infos (simplifié)
-                        $expmode = explode(',', $ponlogin)[1] ?? '';
-                        $price = explode(',', $ponlogin)[2] ?? '0';
-                        $sprice = explode(',', $ponlogin)[4] ?? '0';
-                        $validity = explode(',', $ponlogin)[3] ?? '';
-                        $lock = explode(',', $ponlogin)[6] ?? 'Disable';
-                        // Couleur statut (via scheduler - optionnel)
-                        $moncolor = 'text-green'; // simplifié
-                    ?>
+                </thead>
+                <tbody>
+                <?php foreach ($profiles as $prof):
+                    $ponlogin = $prof['on-login'] ?? '';
+                    $parts = explode(',', $ponlogin);
+                    $expmode = $parts[1] ?? '';
+                    $price = $parts[2] ?? '0';
+                    $sprice = $parts[4] ?? '0';
+                    $validity = $parts[3] ?? '';
+                    $lock = $parts[6] ?? 'Disable';
+                ?>
                     <tr>
                         <td class="text-center">
-                            <a href="profiles.php?action=delete&id=<?= urlencode($pid) ?>" 
-                               onclick="return confirm('Supprimer le profil <?= htmlspecialchars($pname) ?> ?');"
-                               class="text-danger" title="Supprimer">
-                                <i class="bi bi-trash"></i>
-                            </a>
+                            <a href="hotspot.php?tab=profiles&action=delete&id=<?= urlencode($prof['.id']) ?>" 
+                               onclick="return confirm('Supprimer le profil <?= htmlspecialchars($prof['name']) ?> ?');"
+                               class="text-danger" title="Supprimer"><i class="bi bi-trash"></i></a>
                             &nbsp;
-                            <a href="profiles.php?action=edit&id=<?= urlencode($pid) ?>" title="Modifier">
-                                <i class="bi bi-pencil"></i>
-                            </a>
+                            <a href="hotspot.php?tab=profiles&action=edit&id=<?= urlencode($prof['.id']) ?>" title="Modifier"><i class="bi bi-pencil"></i></a>
                         </td>
-                        <td><?= htmlspecialchars($pname) ?></td>
-                        <td><?= htmlspecialchars($psharedu) ?></td>
-                        <td><?= htmlspecialchars($pratelimit) ?></td>
+                        <td><?= htmlspecialchars($prof['name']) ?></td>
+                        <td><?= htmlspecialchars($prof['shared-users'] ?? '') ?></td>
+                        <td><?= htmlspecialchars($prof['rate-limit'] ?? '') ?></td>
                         <td><?= htmlspecialchars($expmode) ?></td>
                         <td><?= htmlspecialchars($validity) ?></td>
                         <td class="text-end"><?= number_format((float)$price, 0, ',', ' ') ?></td>
                         <td class="text-end"><?= number_format((float)$sprice, 0, ',', ' ') ?></td>
                         <td><?= htmlspecialchars($lock) ?></td>
                     </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
         </div>
     </div>
-
-    <!-- Formulaire d'ajout / édition -->
-    <?php if ($action === 'add' || ($action === 'edit' && $editProfile)): 
-        $formProfile = $action === 'edit' ? $editProfile : [];
-        ?>
-    <div class="card card-custom mt-3">
-        <div class="card-header bg-dark text-white">
-            <h3><i class="bi bi-<?= $action === 'add' ? 'plus' : 'pencil' ?>"></i> 
-                <?= $action === 'add' ? 'Ajouter un profil' : 'Modifier le profil' ?></h3>
-        </div>
-        <div class="card-body">
-            <form method="post" action="">
-                <div class="row mb-3">
-                    <div class="col-md-6">
-                        <label class="form-label">Nom</label>
-                        <input type="text" class="form-control" name="name" required 
-                               value="<?= htmlspecialchars($formProfile['name'] ?? '') ?>">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Address Pool</label>
-                        <select class="form-select" name="ppool">
-                            <option <?= ($formProfile['address-pool'] ?? '') == 'none' ? 'selected' : '' ?>>none</option>
-                            <?php
-                            $pools = $API->comm('/ip/pool/print');
-                            foreach ($pools as $pool) {
-                                $selected = ($pool['name'] === ($formProfile['address-pool'] ?? '')) ? 'selected' : '';
-                                echo "<option $selected>{$pool['name']}</option>";
-                            }
-                            ?>
-                        </select>
-                    </div>
-                </div>
-                <div class="row mb-3">
-                    <div class="col-md-6">
-                        <label class="form-label">Shared Users</label>
-                        <input type="number" class="form-control" name="sharedusers" value="<?= htmlspecialchars($formProfile['shared-users'] ?? '1') ?>">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Rate Limit (up/down)</label>
-                        <input type="text" class="form-control" name="ratelimit" placeholder="512k/1M" 
-                               value="<?= htmlspecialchars($formProfile['rate-limit'] ?? '') ?>">
-                    </div>
-                </div>
-                <!-- simplifié : autres champs (exp mode, validity, price, etc.) -->
-                <button type="submit" class="btn btn-orange">Enregistrer</button>
-                <a href="profiles.php" class="btn btn-secondary">Annuler</a>
-            </form>
-        </div>
-    </div>
-    <?php endif; ?>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
+<!-- Formulaire d'ajout / édition -->
+<?php if ($action === 'add' || ($action === 'edit' && $editProfile)):
+    $form = $action === 'edit' ? $editProfile : [];
+    $formOnLogin = $form['on-login'] ?? '';
+    $formParts = explode(',', $formOnLogin);
+    $formExpMode = $formParts[1] ?? '0';
+    $formPrice = $formParts[2] ?? '';
+    $formSprice = $formParts[4] ?? '';
+    $formValidity = $formParts[3] ?? '';
+    $formLock = $formParts[6] ?? 'Disable';
+?>
+<div class="card card-custom mt-3">
+    <div class="card-header bg-dark text-white">
+        <h3><i class="bi bi-<?= $action === 'add' ? 'plus' : 'pencil' ?>"></i> 
+            <?= $action === 'add' ? 'Ajouter un profil' : 'Modifier le profil' ?></h3>
+    </div>
+    <div class="card-body">
+        <form method="post" action="">
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label class="form-label">Nom</label>
+                    <input type="text" class="form-control" name="name" required 
+                           value="<?= htmlspecialchars($form['name'] ?? '') ?>">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Address Pool</label>
+                    <select class="form-select" name="ppool">
+                        <option value="none" <?= ($form['address-pool'] ?? '') == 'none' ? 'selected' : '' ?>>none</option>
+                        <?php foreach ($pools as $pool):
+                            $sel = ($pool['name'] === ($form['address-pool'] ?? '')) ? 'selected' : '';
+                            echo "<option value=\"{$pool['name']}\" $sel>{$pool['name']}</option>";
+                        endforeach; ?>
+                    </select>
+                </div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label class="form-label">Shared Users</label>
+                    <input type="number" class="form-control" name="sharedusers" value="<?= htmlspecialchars($form['shared-users'] ?? '1') ?>">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Rate Limit (up/down)</label>
+                    <input type="text" class="form-control" name="ratelimit" placeholder="512k/1M" 
+                           value="<?= htmlspecialchars($form['rate-limit'] ?? '') ?>">
+                </div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-4">
+                    <label class="form-label">Mode d'expiration</label>
+                    <select class="form-select" name="expmode">
+                        <option value="0" <?= $formExpMode === '0' ? 'selected' : '' ?>>None</option>
+                        <option value="rem" <?= $formExpMode === 'rem' ? 'selected' : '' ?>>Remove</option>
+                        <option value="ntf" <?= $formExpMode === 'ntf' ? 'selected' : '' ?>>Notice</option>
+                        <option value="remc" <?= $formExpMode === 'remc' ? 'selected' : '' ?>>Remove & Record</option>
+                        <option value="ntfc" <?= $formExpMode === 'ntfc' ? 'selected' : '' ?>>Notice & Record</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Validité</label>
+                    <input type="text" class="form-control" name="validity" placeholder="ex: 24h" 
+                           value="<?= htmlspecialchars($formValidity) ?>">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Verrouillage</label>
+                    <select class="form-select" name="lockunlock">
+                        <option value="Disable" <?= $formLock === 'Disable' ? 'selected' : '' ?>>Disable</option>
+                        <option value="Enable" <?= $formLock === 'Enable' ? 'selected' : '' ?>>Enable</option>
+                    </select>
+                </div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label class="form-label">Prix (FCFA)</label>
+                    <input type="number" class="form-control" name="price" value="<?= htmlspecialchars($formPrice) ?>">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Prix de vente (FCFA)</label>
+                    <input type="number" class="form-control" name="sprice" value="<?= htmlspecialchars($formSprice) ?>">
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Parent Queue</label>
+                <select class="form-select" name="parent">
+                    <option value="none" <?= ($form['parent-queue'] ?? '') == 'none' ? 'selected' : '' ?>>none</option>
+                    <?php foreach ($queues as $q):
+                        $sel = ($q['name'] === ($form['parent-queue'] ?? '')) ? 'selected' : '';
+                        echo "<option value=\"{$q['name']}\" $sel>{$q['name']}</option>";
+                    endforeach; ?>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-orange">Enregistrer</button>
+            <a href="hotspot.php?tab=profiles" class="btn btn-secondary">Annuler</a>
+        </form>
+    </div>
+</div>
+<?php endif; ?>
