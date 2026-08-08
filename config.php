@@ -37,11 +37,5 @@ return [
     // CORS
     'allowed_origin' => '*',
 
-    // Turso (logs persistants)
-    'turso' => [
-        'url'   => getenv('TURSO_URL')   ?: '',
-        'token' => getenv('TURSO_TOKEN') ?: '',
-    ],
-
     'debug' => false,
 ];
