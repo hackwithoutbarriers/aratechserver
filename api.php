@@ -277,18 +277,6 @@ function ensure_hotspot_expiry_table(PDO $pdo): void
     )');
 }
 
-function ensure_hotspot_expiry_turso(array $config): void
-{
-    turso_pipeline($config, [[
-        'sql'  => 'CREATE TABLE IF NOT EXISTS hotspot_expiry (
-            user       TEXT PRIMARY KEY,
-            expiry     TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )',
-        'args' => [],
-    ]]);
-}
-
 function require_sync_key(array $config): void
 {
     $key = $_SERVER['HTTP_X_API_KEY'] ?? '';
@@ -296,28 +284,6 @@ function require_sync_key(array $config): void
     if ($expected === '' || !hash_equals($expected, $key)) {
         json_error('Non autorisé.', 403);
     }
-}
-
-function ensure_router_logs_table(array $config): void
-{
-    turso_pipeline($config, [
-        [
-            'sql'  => "CREATE TABLE IF NOT EXISTS router_logs (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                log_date    TEXT NOT NULL,
-                log_time    TEXT NOT NULL,
-                topics      TEXT NOT NULL DEFAULT '',
-                message     TEXT NOT NULL,
-                received_at TEXT NOT NULL,
-                UNIQUE(log_date, log_time, message)
-            )",
-            'args' => [],
-        ],
-        [
-            'sql'  => 'CREATE INDEX IF NOT EXISTS idx_router_logs_date ON router_logs(log_date)',
-            'args' => [],
-        ],
-    ]);
 }
 
 function normalize_router_date(string $raw): string
