@@ -37,5 +37,5 @@ return [
     // CORS
     'allowed_origin' => '*',
 
-    'debug' => false,
+    'debug' => true,
 ];
