@@ -1,7 +1,6 @@
 <?php
 declare(strict_types=1);
-// Ce fichier doit être inclus après auth.php et après avoir défini $config si nécessaire.
-// Il suppose que $config est disponible (pour le token admin si besoin), mais il ne l'utilise pas directement ici.
+// Ce fichier doit être inclus après auth.php et après avoir défini $pageTitle si nécessaire.
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -17,14 +16,20 @@ declare(strict_types=1);
         body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; padding-bottom: 60px; }
         .navbar-custom { background: var(--bleu-nuit); }
         .navbar-brand { font-weight: 700; font-size: 1.3rem; color: #fff !important; }
-        .nav-link { color: rgba(255,255,255,0.85) !important; }
-        .nav-link:hover { color: #fff !important; }
-        .dropdown-menu { border-radius: 8px; }
-        .dropdown-item i { color: var(--orange); margin-right: 6px; }
+        .subnavbar { background: #1a1e2b; border-bottom: 3px solid var(--orange); }
+        .subnavbar .nav-link { color: rgba(255,255,255,0.8) !important; font-size: 0.9rem; padding: 0.5rem 0.8rem; }
+        .subnavbar .nav-link:hover,
+        .subnavbar .nav-link.active { color: var(--orange) !important; background: rgba(255,255,255,0.1); border-radius: 4px; }
+        .subnavbar .nav-link i { margin-right: 4px; color: var(--orange); }
         .card-custom { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 1.5rem; }
         .card-header-custom { background: var(--bleu-nuit); color: #fff; border-radius: 12px 12px 0 0 !important; font-weight: 600; }
         .btn-orange { background: var(--orange); border: none; color: #fff; font-weight: 600; border-radius: 8px; }
         .btn-orange:hover { background: #e5941f; color: #fff; }
+        .stat-value { font-size: 2rem; font-weight: 700; color: var(--bleu-nuit); }
+        .stat-label { font-size: 0.9rem; color: #6c757d; }
+        .status-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; }
+        .online { background: #28a745; }
+        .offline { background: #dc3545; }
         #backToTop {
             position: fixed; bottom: 30px; right: 30px; display: none;
             width: 48px; height: 48px; border-radius: 50%;
@@ -36,38 +41,38 @@ declare(strict_types=1);
     </style>
 </head>
 <body>
-    <!-- Barre de navigation avec dropdown Navigation rapide -->
-    <nav class="navbar navbar-custom navbar-dark navbar-expand-lg px-3">
+    <!-- Barre principale -->
+    <nav class="navbar navbar-custom navbar-dark px-3">
         <a href="index.php" class="navbar-brand">⚡ ARA Tech WiFi Admin</a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-        <div class="collapse navbar-collapse" id="navbarNav">
-            <ul class="navbar-nav me-auto">
-                <li class="nav-item dropdown">
-                    <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                        <i class="bi bi-compass"></i> Navigation rapide
-                    </a>
-                    <ul class="dropdown-menu">
-                        <li><a class="dropdown-item" href="status.php"><i class="bi bi-wifi"></i> Statut Hotspot</a></li>
-                        <li><a class="dropdown-item" href="ads.php"><i class="bi bi-megaphone"></i> Annonces</a></li>
-                        <li><a class="dropdown-item" href="logs.php"><i class="bi bi-journal-text"></i> Logs</a></li>
-                        <li><a class="dropdown-item" href="users.php"><i class="bi bi-people"></i> Utilisateurs</a></li>
-                        <li><a class="dropdown-item" href="reports.php"><i class="bi bi-graph-up"></i> Rapports</a></li>
-                        <li><a class="dropdown-item" href="settings.php"><i class="bi bi-sliders"></i> Configuration</a></li>
-                    </ul>
-                </li>
-            </ul>
+        <div class="ms-auto">
             <a href="logout.php" class="btn btn-outline-light btn-sm">Déconnexion</a>
         </div>
     </nav>
+
+    <!-- Sous-menu navigation rapide (toujours visible) -->
+    <div class="subnavbar py-1">
+        <div class="container-fluid">
+            <ul class="nav flex-wrap">
+                <li class="nav-item"><a class="nav-link" href="index.php"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
+                <li class="nav-item"><a class="nav-link" href="status.php"><i class="bi bi-wifi"></i> Statut</a></li>
+                <li class="nav-item"><a class="nav-link" href="ads.php"><i class="bi bi-megaphone"></i> Annonces</a></li>
+                <li class="nav-item"><a class="nav-link" href="logs.php"><i class="bi bi-journal-text"></i> Logs</a></li>
+                <li class="nav-item"><a class="nav-link" href="users.php"><i class="bi bi-people"></i> Utilisateurs</a></li>
+                <li class="nav-item"><a class="nav-link" href="reports.php"><i class="bi bi-graph-up"></i> Rapports</a></li>
+                <li class="nav-item"><a class="nav-link" href="settings.php"><i class="bi bi-sliders"></i> Configuration</a></li>
+                <li class="nav-item"><a class="nav-link" href="profiles.php"><i class="bi bi-pie-chart"></i> Profils</a></li>
+                <li class="nav-item"><a class="nav-link" href="active-users.php"><i class="bi bi-people-fill"></i> Utilisateurs actifs</a></li>
+                <li class="nav-item"><a class="nav-link" href="vouchers.php"><i class="bi bi-ticket-perforated"></i> Vouchers</a></li>
+                <li class="nav-item"><a class="nav-link" href="traffic.php"><i class="bi bi-graph-up-arrow"></i> Trafic</a></li>
+            </ul>
+        </div>
+    </div>
 
     <!-- Bouton retour en haut -->
     <button id="backToTop" title="Retour en haut"><i class="bi bi-arrow-up"></i></button>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Gestion du bouton "retour en haut"
         const backToTopBtn = document.getElementById('backToTop');
         window.addEventListener('scroll', () => {
             if (window.scrollY > 300) {
