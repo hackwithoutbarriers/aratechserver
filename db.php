@@ -192,17 +192,17 @@ function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, str
  */
 function ara_db_supabase(): PDO
 {
-    // Test avec les valeurs exactes du pooler
-    $host     = 'aws-1-eu-west-1.pooler.supabase.com';
-    $port     = '6543';
-    $dbname   = 'postgres';
-    $user     = 'postgres.pqmmuaavceftkovzrhyg';
-    $password = 'Zj+Mkfa-Xjgku*4Dieu100%';  
+    $host     = trim(getenv('SUPABASE_PGHOST')     ?: 'aws-1-eu-west-1.pooler.supabase.com');
+    $port     = trim(getenv('SUPABASE_PGPORT')     ?: '6543');
+    $dbname   = trim(getenv('SUPABASE_PGDATABASE') ?: 'postgres');
+    $user     = trim(getenv('SUPABASE_PGUSER')     ?: 'postgres.pqmmuaavceftkovzrhyg');
+    $password = trim(getenv('SUPABASE_PGPASSWORD') ?: '');
 
     $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
     $pdo = new PDO($dsn, $user, $password, [
         PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
+    $pdo->exec("SET statement_timeout = '10s'");
     return $pdo;
 }
