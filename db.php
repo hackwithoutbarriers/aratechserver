@@ -185,3 +185,26 @@ function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, str
     }
     return false;
 }
+
+/**
+ * Connexion à la base PostgreSQL Supabase.
+ * Les paramètres proviennent des variables d'environnement Render.
+ */
+function ara_db_supabase(): PDO
+{
+    $host     = getenv('SUPABASE_PGHOST')     ?: 'aws-0-eu-west-3.pooler.supabase.com';
+    $port     = getenv('SUPABASE_PGPORT')     ?: '6543';
+    $dbname   = getenv('SUPABASE_PGDATABASE') ?: 'postgres';
+    $user     = getenv('SUPABASE_PGUSER')     ?: '';
+    $password = getenv('SUPABASE_PGPASSWORD') ?: '';
+
+    $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
+    $pdo = new PDO($dsn, $user, $password, [
+        PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ]);
+
+    // Activer le mode WAL-like (non nécessaire, mais on définit quelques paramètres)
+    $pdo->exec("SET statement_timeout = '10s'");
+    return $pdo;
+}
