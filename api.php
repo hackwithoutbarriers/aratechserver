@@ -473,7 +473,7 @@ switch ($route) {
             json_error('user et expiry requis.');
         }
         try {
-            // 1) Base locale
+            // 1) Base locale (reste pour la rapidité)
             $pdo = ara_db($config);
             ensure_hotspot_expiry_table($pdo);
             $stmt = $pdo->prepare(
@@ -487,19 +487,14 @@ switch ($route) {
                 ':updated_at' => date('c'),
             ]);
 
-            // 2) Turso
-            if (!empty($config['turso']['url']) && !empty($config['turso']['token'])) {
-                try {
-                    ensure_hotspot_expiry_turso($config);
-                    turso_pipeline($config, [[
-                        'sql'  => 'INSERT OR REPLACE INTO hotspot_expiry (user, expiry, updated_at)
-                                   VALUES (?, ?, ?)',
-                        'args' => [$user, $expiry, date('c')],
-                    ]]);
-                } catch (Throwable $e) {
-                    ara_log('api.php Set-expiry Turso error: ' . $e->getMessage(), $config, 'error');
-                }
-            }
+            // 2) Supabase (persistance)
+            $pdoSup = ara_db_supabase();
+            $stmt2 = $pdoSup->prepare(
+                "INSERT INTO hotspot_expiry (user_id, expiry, updated_at)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT (user_id) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at"
+            );
+            $stmt2->execute([$user, $expiry, date('c')]);
 
             json_response(['success' => true]);
         } catch (Throwable $e) {
@@ -517,7 +512,7 @@ switch ($route) {
         }
 
         try {
-            // 1) Locale
+            // 1) Base locale
             $pdo = ara_db($config);
             ensure_hotspot_expiry_table($pdo);
             $stmt = $pdo->prepare('SELECT expiry FROM hotspot_expiry WHERE user = :user');
@@ -527,42 +522,33 @@ switch ($route) {
                 json_response(['success' => true, 'expiry' => $row['expiry']]);
             }
 
-            // 2) Turso
-            if (!empty($config['turso']['url']) && !empty($config['turso']['token'])) {
-                try {
-                    ensure_hotspot_expiry_turso($config);
-                    $results = turso_pipeline($config, [[
-                        'sql'  => 'SELECT expiry FROM hotspot_expiry WHERE user = ?',
-                        'args' => [$user],
-                    ]]);
-                    foreach ($results as $r) {
-                        if (!empty($r['response']['result']['cols'])) {
-                            $rows = turso_rows($r);
-                            if (!empty($rows[0]['expiry'])) {
-                                // Restaurer dans la locale
-                                try {
-                                    $pdo = ara_db($config);
-                                    ensure_hotspot_expiry_table($pdo);
-                                    $stmt = $pdo->prepare(
-                                        'INSERT INTO hotspot_expiry (user, expiry, updated_at)
-                                         VALUES (:user, :expiry, :updated_at)
-                                         ON CONFLICT(user) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at'
-                                    );
-                                    $stmt->execute([':user' => $user, ':expiry' => $rows[0]['expiry'], ':updated_at' => date('c')]);
-                                } catch (Throwable $e) {}
+            // 2) Supabase
+            try {
+                $pdoSup = ara_db_supabase();
+                $stmt2 = $pdoSup->prepare('SELECT expiry FROM hotspot_expiry WHERE user_id = ?');
+                $stmt2->execute([$user]);
+                $row2 = $stmt2->fetch();
+                if ($row2 && !empty($row2['expiry'])) {
+                    // Restaurer la locale si nécessaire
+                    try {
+                        $pdo = ara_db($config);
+                        ensure_hotspot_expiry_table($pdo);
+                        $stmt = $pdo->prepare(
+                            'INSERT INTO hotspot_expiry (user, expiry, updated_at)
+                             VALUES (:user, :expiry, :updated_at)
+                             ON CONFLICT(user) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at'
+                        );
+                        $stmt->execute([':user' => $user, ':expiry' => $row2['expiry'], ':updated_at' => date('c')]);
+                    } catch (Throwable $e) {}
 
-                                json_response(['success' => true, 'expiry' => $rows[0]['expiry']]);
-                            }
-                            break;
-                        }
-                    }
-                } catch (Throwable $e) {}
-            }
+                    json_response(['success' => true, 'expiry' => $row2['expiry']]);
+                }
+            } catch (Throwable $e) {}
 
-            // 3) Routeur en direct
+            // 3) Routeur en direct (inchangé)
             $expiry = get_user_expiry_from_router($config, $user);
             if ($expiry !== '') {
-                // Mettre à jour la locale et Turso
+                // Mettre à jour locale + Supabase
                 try {
                     $pdo = ara_db($config);
                     ensure_hotspot_expiry_table($pdo);
@@ -572,17 +558,15 @@ switch ($route) {
                          ON CONFLICT(user) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at'
                     );
                     $stmt->execute([':user' => $user, ':expiry' => $expiry, ':updated_at' => date('c')]);
-                } catch (Throwable $e) {}
 
-                if (!empty($config['turso']['url']) && !empty($config['turso']['token'])) {
-                    try {
-                        turso_pipeline($config, [[
-                            'sql'  => 'INSERT OR REPLACE INTO hotspot_expiry (user, expiry, updated_at)
-                                       VALUES (?, ?, ?)',
-                            'args' => [$user, $expiry, date('c')],
-                        ]]);
-                    } catch (Throwable $e) {}
-                }
+                    $pdoSup = ara_db_supabase();
+                    $stmt2 = $pdoSup->prepare(
+                        "INSERT INTO hotspot_expiry (user_id, expiry, updated_at)
+                         VALUES (?, ?, ?)
+                         ON CONFLICT (user_id) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at"
+                    );
+                    $stmt2->execute([$user, $expiry, date('c')]);
+                } catch (Throwable $e) {}
 
                 json_response(['success' => true, 'expiry' => $expiry]);
             }
@@ -606,11 +590,15 @@ switch ($route) {
             json_error('Corps vide : aucun log à enregistrer.');
         }
         try {
-            ensure_router_logs_table($config);
+            $pdo = ara_db_supabase();
             $now      = date('c');
             $inserted = 0;
             $skipped  = 0;
-            $stmts    = [];
+            $stmt = $pdo->prepare(
+                "INSERT INTO router_logs (log_date, log_time, topics, message, received_at)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT (log_date, log_time, message) DO NOTHING"
+            );
             foreach (explode("\n", $body) as $line) {
                 $line = trim($line);
                 if ($line === '') continue;
@@ -621,18 +609,11 @@ switch ($route) {
                 $topics   = trim($topics);
                 $message  = trim($message);
                 if (!preg_match('/^\d{2}:\d{2}:\d{2}$/', $log_time)) continue;
-                $stmts[] = [
-                    'sql'  => 'INSERT OR IGNORE INTO router_logs
-                               (log_date, log_time, topics, message, received_at)
-                               VALUES (?, ?, ?, ?, ?)',
-                    'args' => [$date, $log_time, $topics, $message, $now],
-                ];
-            }
-            if (!empty($stmts)) {
-                $results = turso_pipeline($config, $stmts);
-                foreach ($results as $r) {
-                    $affected = (int)($r['response']['result']['rows_affected'] ?? 0);
-                    $affected > 0 ? $inserted++ : $skipped++;
+                try {
+                    $stmt->execute([$date, $log_time, $topics, $message, $now]);
+                    $inserted++;
+                } catch (Throwable $e) {
+                    $skipped++;
                 }
             }
             json_response(['success' => true, 'date' => $date, 'inserted' => $inserted, 'skipped' => $skipped]);
@@ -649,30 +630,15 @@ switch ($route) {
         $date  = normalize_router_date($_GET['date'] ?? date('Y-m-d'));
         $topic = trim($_GET['topic'] ?? '');
         try {
-            ensure_router_logs_table($config);
+            $pdo = ara_db_supabase();
             if ($topic !== '') {
-                $results = turso_pipeline($config, [[
-                    'sql'  => 'SELECT log_time, topics, message FROM router_logs
-                               WHERE log_date = ? AND topics LIKE ?
-                               ORDER BY log_time ASC',
-                    'args' => [$date, '%' . $topic . '%'],
-                ]]);
+                $stmt = $pdo->prepare("SELECT log_time, topics, message FROM router_logs WHERE log_date = ? AND topics LIKE ? ORDER BY log_time ASC");
+                $stmt->execute([$date, '%' . $topic . '%']);
             } else {
-                $results = turso_pipeline($config, [[
-                    'sql'  => 'SELECT log_time, topics, message FROM router_logs
-                               WHERE log_date = ?
-                               ORDER BY log_time ASC',
-                    'args' => [$date],
-                ]]);
+                $stmt = $pdo->prepare("SELECT log_time, topics, message FROM router_logs WHERE log_date = ? ORDER BY log_time ASC");
+                $stmt->execute([$date]);
             }
-            $selectResult = null;
-            foreach ($results as $r) {
-                if (($r['response']['result']['cols'] ?? null) !== null) {
-                    $selectResult = $r;
-                    break;
-                }
-            }
-            $rows = $selectResult ? turso_rows($selectResult) : [];
+            $rows = $stmt->fetchAll();
             json_response(['success' => true, 'date' => $date, 'count' => count($rows), 'logs' => $rows]);
         } catch (Throwable $e) {
             ara_log('api.php Get-logs error: ' . $e->getMessage(), $config, 'error');
@@ -681,87 +647,44 @@ switch ($route) {
             json_error($msg, 500);
         }
         break;
-
     case 'get-sales':
         require_admin_token($config);
         $startDate = $_GET['start'] ?? date('Y-m-01');
         $endDate   = $_GET['end']   ?? date('Y-m-d');
+
         try {
-            turso_pipeline($config, [[
-                'sql' => 'CREATE TABLE IF NOT EXISTS sales_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sale_date TEXT NOT NULL,
-                    sale_time TEXT NOT NULL,
-                    username TEXT NOT NULL,
-                    amount INTEGER,
-                    ip TEXT,
-                    mac TEXT,
-                    profile TEXT,
-                    comment TEXT,
-                    received_at TEXT NOT NULL
-                )',
-                'args' => [],
-            ]]);
-            $caResults = turso_pipeline($config, [[
-                'sql'  => 'SELECT COALESCE(SUM(amount), 0) AS total_ca FROM sales_log WHERE sale_date BETWEEN ? AND ?',
-                'args' => [$startDate, $endDate],
-            ]]);
-            $caRow = null;
-            foreach ($caResults as $r) {
-                if (!empty($r['response']['result']['cols'])) {
-                    $rows = turso_rows($r);
-                    $caRow = $rows[0] ?? null;
-                    break;
-                }
-            }
-            $totalCA = $caRow['total_ca'] ?? 0;
-            $countResults = turso_pipeline($config, [[
-                'sql'  => 'SELECT COUNT(*) AS total_tickets FROM sales_log WHERE sale_date BETWEEN ? AND ?',
-                'args' => [$startDate, $endDate],
-            ]]);
-            $countRow = null;
-            foreach ($countResults as $r) {
-                if (!empty($r['response']['result']['cols'])) {
-                    $rows = turso_rows($r);
-                    $countRow = $rows[0] ?? null;
-                    break;
-                }
-            }
-            $totalTickets = $countRow['total_tickets'] ?? 0;
-            $profileResults = turso_pipeline($config, [[
-                'sql'  => 'SELECT profile, COUNT(*) AS nb, COALESCE(SUM(amount),0) AS ca FROM sales_log WHERE sale_date BETWEEN ? AND ? GROUP BY profile ORDER BY ca DESC',
-                'args' => [$startDate, $endDate],
-            ]]);
-            $profileStats = [];
-            foreach ($profileResults as $r) {
-                if (!empty($r['response']['result']['cols'])) {
-                    $profileStats = turso_rows($r);
-                    break;
-                }
-            }
-            $detailResults = turso_pipeline($config, [[
-                'sql'  => 'SELECT sale_date, sale_time, username, profile, amount FROM sales_log WHERE sale_date BETWEEN ? AND ? ORDER BY sale_date DESC, sale_time DESC LIMIT 200',
-                'args' => [$startDate, $endDate],
-            ]]);
-            $details = [];
-            foreach ($detailResults as $r) {
-                if (!empty($r['response']['result']['cols'])) {
-                    $details = turso_rows($r);
-                    break;
-                }
-            }
+            $pdo = ara_db_supabase();
+
+            // CA total
+            $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) AS total_ca FROM sales_log WHERE sale_date BETWEEN ? AND ?");
+            $stmt->execute([$startDate, $endDate]);
+            $totalCA = (int)$stmt->fetchColumn();
+
+            // Nombre de tickets
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM sales_log WHERE sale_date BETWEEN ? AND ?");
+            $stmt->execute([$startDate, $endDate]);
+            $totalTickets = (int)$stmt->fetchColumn();
+
+            // Par profil
+            $stmt = $pdo->prepare("SELECT profile, COUNT(*) AS nb, COALESCE(SUM(amount),0) AS ca FROM sales_log WHERE sale_date BETWEEN ? AND ? GROUP BY profile ORDER BY ca DESC");
+            $stmt->execute([$startDate, $endDate]);
+            $profileStats = $stmt->fetchAll();
+
+            // Dernières ventes
+            $stmt = $pdo->prepare("SELECT sale_date, sale_time, username, profile, amount FROM sales_log WHERE sale_date BETWEEN ? AND ? ORDER BY sale_date DESC, sale_time DESC LIMIT 200");
+            $stmt->execute([$startDate, $endDate]);
+            $salesDetails = $stmt->fetchAll();
+
             json_response([
                 'success'       => true,
-                'total_ca'      => (int)$totalCA,
-                'total_tickets' => (int)$totalTickets,
+                'total_ca'      => $totalCA,
+                'total_tickets' => $totalTickets,
                 'profile_stats' => $profileStats,
-                'sales'         => $details,
+                'sales'         => $salesDetails,
             ]);
         } catch (Throwable $e) {
             ara_log('api.php Get-sales error: ' . $e->getMessage(), $config, 'error');
-            $msg = 'Erreur lors de la récupération des ventes.';
-            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
-            json_error($msg, 500);
+            json_error('Erreur lors de la récupération des ventes.', 500);
         }
         break;
 
@@ -780,26 +703,10 @@ switch ($route) {
             json_error('Données de vente incomplètes.');
         }
         try {
-            turso_pipeline($config, [[
-                'sql' => 'CREATE TABLE IF NOT EXISTS sales_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sale_date TEXT NOT NULL,
-                    sale_time TEXT NOT NULL,
-                    username TEXT NOT NULL,
-                    amount INTEGER,
-                    ip TEXT,
-                    mac TEXT,
-                    profile TEXT,
-                    comment TEXT,
-                    received_at TEXT NOT NULL
-                )',
-                'args' => [],
-            ]]);
-            turso_pipeline($config, [[
-                'sql' => 'INSERT INTO sales_log (sale_date, sale_time, username, amount, ip, mac, profile, comment, received_at)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                'args' => [$date, $time, $user, $amount, $ip, $mac, $profile, $comment, date('c')],
-            ]]);
+            $pdo = ara_db_supabase();
+            $stmt = $pdo->prepare("INSERT INTO sales_log (sale_date, sale_time, username, amount, ip, mac, profile, comment, received_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$date, $time, $user, $amount, $ip, $mac, $profile, $comment, date('c')]);
             json_response(['success' => true]);
         } catch (Throwable $e) {
             ara_log('api.php Log-sale error: ' . $e->getMessage(), $config, 'error');
@@ -812,39 +719,17 @@ switch ($route) {
         $startDate = $_GET['start'] ?? date('Y-m-01');
         $endDate   = $_GET['end']   ?? date('Y-m-d');
         try {
-            turso_pipeline($config, [[
-                'sql' => 'CREATE TABLE IF NOT EXISTS sales_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sale_date TEXT NOT NULL,
-                    sale_time TEXT NOT NULL,
-                    username TEXT NOT NULL,
-                    amount INTEGER,
-                    ip TEXT,
-                    mac TEXT,
-                    profile TEXT,
-                    comment TEXT,
-                    received_at TEXT NOT NULL
-                )',
-                'args' => [],
-            ]]);
-            $results = turso_pipeline($config, [[
-                'sql'  => 'SELECT sale_date, SUM(amount) AS total FROM sales_log WHERE sale_date BETWEEN ? AND ? GROUP BY sale_date ORDER BY sale_date ASC',
-                'args' => [$startDate, $endDate],
-            ]]);
-            $daily = [];
-            foreach ($results as $r) {
-                if (!empty($r['response']['result']['cols'])) {
-                    $daily = turso_rows($r);
-                    break;
-                }
-            }
+            $pdo = ara_db_supabase();
+            $stmt = $pdo->prepare("SELECT sale_date, SUM(amount) AS total FROM sales_log WHERE sale_date BETWEEN ? AND ? GROUP BY sale_date ORDER BY sale_date ASC");
+            $stmt->execute([$startDate, $endDate]);
+            $daily = $stmt->fetchAll();
             json_response(['success' => true, 'daily' => $daily]);
         } catch (Throwable $e) {
             json_error('Erreur get-sales-daily: ' . $e->getMessage(), 500);
         }
         break;
 
-    case 'push-status':
+        case 'push-status':
         require_sync_key($config);
         $payload = get_request_payload();
         $activeCount = (int)($payload['active'] ?? 0);
@@ -853,7 +738,7 @@ switch ($route) {
         $date = date('Y-m-d');
         $time = date('H:i:s');
         try {
-            // 1) Base locale
+            // 1) Locale (rapide)
             $pdo = ara_db($config);
             $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -868,26 +753,12 @@ switch ($route) {
                 VALUES (?, ?, ?, ?, ?)");
             $stmt->execute([$date, $time, $activeCount, $usersRaw, $now]);
 
-            // 2) Miroir Turso
-            if (!empty($config['turso']['url']) && !empty($config['turso']['token'])) {
-                turso_pipeline($config, [[
-                    'sql' => 'CREATE TABLE IF NOT EXISTS hotspot_snapshots (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        snapshot_date TEXT NOT NULL,
-                        snapshot_time TEXT NOT NULL,
-                        active_count INTEGER NOT NULL,
-                        users_blob TEXT,
-                        received_at TEXT NOT NULL
-                    )',
-                    'args' => [],
-                ]]);
-                turso_pipeline($config, [[
-                    'sql' => 'INSERT INTO hotspot_snapshots 
-                        (snapshot_date, snapshot_time, active_count, users_blob, received_at)
-                        VALUES (?, ?, ?, ?, ?)',
-                    'args' => [$date, $time, $activeCount, $usersRaw, $now],
-                ]]);
-            }
+            // 2) Supabase (persistance)
+            $pdoSup = ara_db_supabase();
+            $stmt2 = $pdoSup->prepare("INSERT INTO hotspot_snapshots 
+                (snapshot_date, snapshot_time, active_count, users_blob, received_at)
+                VALUES (?, ?, ?, ?, ?)");
+            $stmt2->execute([$date, $time, $activeCount, $usersRaw, $now]);
 
             json_response(['success' => true, 'active' => $activeCount]);
         } catch (Throwable $e) {
@@ -895,7 +766,7 @@ switch ($route) {
             json_error('Erreur lors de l\'enregistrement du statut.', 500);
         }
         break;
-
+    
     default:
         json_error('Route inconnue.', 404);
 }
