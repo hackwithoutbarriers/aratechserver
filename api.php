@@ -1088,20 +1088,20 @@ try {
 }
 
             // Graphique CA (granularité adaptative)
-            if ($period === 'today' || $period === 'yesterday') {
-                $stmt5 = $pdo->prepare(
-                    "SELECT sale_time, SUM(amount) AS total
-                     FROM sales_log
-                     WHERE sale_date = ?
-                     GROUP BY strftime('%H', sale_time)
-                     ORDER BY sale_time"
-                );
-                $stmt5->execute([$start]);
-                $rows = $stmt5->fetchAll();
-                $chart = array_map(function($r) {
-                    return ['label' => substr($r['sale_time'], 0, 5), 'value' => (int)$r['total']];
-                }, $rows);
-            } else {
+if ($period === 'today' || $period === 'yesterday') {
+    // Extraction de l'heure avec LEFT() compatible PostgreSQL
+    $stmt5 = $pdo->prepare(
+        "SELECT LEFT(sale_time, 2) AS hour_label, SUM(amount) AS total
+         FROM sales_log WHERE sale_date = ?
+         GROUP BY LEFT(sale_time, 2)
+         ORDER BY hour_label"
+    );
+    $stmt5->execute([$start]);
+    $rows = $stmt5->fetchAll();
+    $chart = array_map(function($r) {
+        return ['label' => $r['hour_label'] . ':00', 'value' => (int)$r['total']];
+    }, $rows);
+} else {
                 $stmt5 = $pdo->prepare(
                     "SELECT sale_date, SUM(amount) AS total
                      FROM sales_log
