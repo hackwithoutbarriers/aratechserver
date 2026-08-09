@@ -220,7 +220,7 @@ try {
     'use strict';
 
     const ADMIN_TOKEN = <?= json_encode($adminToken) ?>;
-    const API = 'api.php';
+    const API = '/api.php';
 
     // ---- État ----------------------------------------------------------
     const state = {
