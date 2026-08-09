@@ -277,6 +277,191 @@ function ensure_hotspot_expiry_table(PDO $pdo): void
     )');
 }
 
+// ---------------------------------------------------------------------
+// HOTSPOT V2.1 — PHASE H2 : UTILISATEURS
+// ---------------------------------------------------------------------
+
+/**
+ * Réponse de succès au contrat H2 : { success: true, data: {...} }
+ */
+function json_api_success($data, int $status = 200): void
+{
+    json_response(['success' => true, 'data' => $data], $status);
+}
+
+/**
+ * Réponse d'erreur au contrat H2 : { success: false, error: { code, message } }
+ * (distinct du format {success:false,message:...} utilisé par les routes
+ * historiques de ce fichier — conservé tel quel pour H2 uniquement, voir
+ * le rapport final §23/§Limitations).
+ */
+function json_api_error(string $code, string $message, int $status = 400): void
+{
+    json_response(['success' => false, 'error' => ['code' => $code, 'message' => $message]], $status);
+}
+
+function require_post_method(): void
+{
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        json_api_error('INVALID_REQUEST', 'Cette route nécessite une requête POST.', 405);
+    }
+}
+
+/**
+ * Table de file de commandes MikroTik (H2 §19).
+ *
+ * Aucun mécanisme de file (command/queue/job/pending/sync/push/action)
+ * n'a été trouvé ailleurs dans le dépôt lors de l'audit H2 : la seule
+ * voie existante Render → routeur est le "push" initié PAR le routeur
+ * (push-status, sync-users, sync-profiles, set-expiry). Le Render ne
+ * peut pas ouvrir de connexion vers 192.168.88.1.
+ *
+ * Cette table est donc une structure MINIMALE : elle enregistre
+ * l'intention (create/update/enable/disable/delete) pour qu'un futur
+ * script MikroTik/scheduler (à écrire en H3, sur le modèle de
+ * push-hotspot-status.rsc) puisse la consommer via une route de type
+ * "GET api.php?route=hotspot-commands-pending" (NON implémentée ici)
+ * et confirmer l'exécution. Pour l'instant, aucune consommation
+ * automatique n'existe : voir le rapport final §11/§18.
+ */
+function ensure_hotspot_commands_table(PDO $pdo): void
+{
+    $pdo->exec('CREATE TABLE IF NOT EXISTS hotspot_commands (
+        id BIGSERIAL PRIMARY KEY,
+        action TEXT NOT NULL,
+        username TEXT NOT NULL,
+        payload TEXT,
+        status TEXT NOT NULL DEFAULT \'pending\',
+        created_at TEXT NOT NULL,
+        processed_at TEXT
+    )');
+}
+
+function queue_hotspot_command(array $config, string $action, string $username, array $payload = []): void
+{
+    try {
+        $pdo = ara_db_supabase();
+        ensure_hotspot_commands_table($pdo);
+        // Ne jamais persister le mot de passe en clair dans la file de commandes.
+        unset($payload['password']);
+        $stmt = $pdo->prepare(
+            'INSERT INTO hotspot_commands (action, username, payload, status, created_at)
+             VALUES (?, ?, ?, \'pending\', ?)'
+        );
+        $stmt->execute([$action, $username, json_encode($payload, JSON_UNESCAPED_UNICODE), date('c')]);
+    } catch (Throwable $e) {
+        // La file de commandes est une amélioration H2 non bloquante :
+        // si elle échoue, la mutation Supabase elle-même n'est pas annulée,
+        // mais on trace l'échec (jamais le mot de passe).
+        ara_log('hotspot_commands queue error (' . $action . '/' . $username . '): ' . $e->getMessage(), $config, 'error');
+    }
+}
+
+/**
+ * Validation stricte du nom d'utilisateur avant toute requête SQL ou
+ * commande destinée au routeur (H2 §26/§31).
+ */
+function hotspot_username_valid(string $username): bool
+{
+    return $username !== '' && strlen($username) <= 64 && preg_match('/^[A-Za-z0-9_.\-]+$/', $username) === 1;
+}
+
+/**
+ * Vérifie qu'un profil existe dans hotspot_profiles. Si la table est
+ * absente ou inaccessible, on ne bloque pas la création/modification
+ * (aucune preuve que cette table soit une contrainte obligatoire) mais
+ * on trace l'anomalie — voir rapport final §Limitations.
+ */
+function hotspot_profile_exists(PDO $pdo, string $profile, array $config): ?bool
+{
+    try {
+        $stmt = $pdo->prepare('SELECT 1 FROM hotspot_profiles WHERE profile_name = ? LIMIT 1');
+        $stmt->execute([$profile]);
+        return (bool)$stmt->fetchColumn();
+    } catch (Throwable $e) {
+        ara_log('hotspot_profile_exists: table hotspot_profiles inaccessible (' . $e->getMessage() . ')', $config, 'warning');
+        return null; // inconnu : ne bloque pas
+    }
+}
+
+/**
+ * Retire les champs sensibles/techniques non pertinents pour l'admin
+ * avant de retourner un utilisateur (le mot de passe n'est JAMAIS
+ * renvoyé par une route de lecture — H2 §27).
+ */
+function hotspot_user_public_row(array $row): array
+{
+    $disabled = (($row['disabled'] ?? 'false') === 'true') || $row['disabled'] === true;
+    return [
+        'username'    => (string)($row['username'] ?? ''),
+        'profile'     => (string)($row['profile'] ?? ''),
+        'mac_address' => (string)($row['mac_address'] ?? ''),
+        'comment'     => (string)($row['comment'] ?? ''),
+        'disabled'    => $disabled,
+        'bytes_in'    => (int)($row['bytes_in'] ?? 0),
+        'bytes_out'   => (int)($row['bytes_out'] ?? 0),
+        'uptime'      => (string)($row['uptime'] ?? ''),
+        'server'      => (string)($row['server'] ?? ''),
+        'expiry'      => isset($row['expiry']) && $row['expiry'] !== null ? (string)$row['expiry'] : null,
+    ];
+}
+
+/**
+ * Détermine, de façon fiable, l'ensemble des usernames actuellement en
+ * ligne à partir du dernier snapshot poussé par le routeur (même source
+ * que la route "status"). Si aucun snapshot récent n'est disponible,
+ * retourne null : l'appelant doit alors afficher UNKNOWN et jamais
+ * OFFLINE par défaut (H2 §8/§11).
+ */
+function hotspot_online_usernames(array $config): ?array
+{
+    $snapshot = null;
+    try {
+        $pdo = ara_db_supabase();
+        ensure_hotspot_snapshot_columns($pdo, true);
+        $stmt = $pdo->query('SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1');
+        $snapshot = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    } catch (Throwable $e) {
+        try {
+            $pdoLocal = ara_db($config);
+            $pdoLocal->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_date TEXT NOT NULL,
+                snapshot_time TEXT NOT NULL,
+                active_count INTEGER NOT NULL,
+                users_blob TEXT,
+                received_at TEXT NOT NULL
+            )");
+            ensure_hotspot_snapshot_columns($pdoLocal, false);
+            $stmt = $pdoLocal->query('SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1');
+            $snapshot = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (Throwable $e2) {
+            return null;
+        }
+    }
+
+    if (!$snapshot) {
+        return null;
+    }
+
+    $routerStatus = compute_router_status(
+        $snapshot['snapshot_date'] ?? null,
+        $snapshot['snapshot_time'] ?? null,
+        $snapshot['received_at'] ?? null
+    );
+    if ($routerStatus['status'] !== 'ONLINE') {
+        return null;
+    }
+
+    $usernames = [];
+    foreach (extract_snapshot_users($snapshot) as $u) {
+        if (!empty($u['user'])) {
+            $usernames[] = $u['user'];
+        }
+    }
+    return $usernames;
+}
+
 function require_sync_key(array $config): void
 {
     $key = $_SERVER['HTTP_X_API_KEY'] ?? '';
@@ -1536,6 +1721,407 @@ if ($period === 'today' || $period === 'yesterday') {
             }
             json_error($message, 500);
         }
+        break;
+
+    // -----------------------------------------------------------------
+    // HOTSPOT V2.1 — PHASE H2 : ROUTES UTILISATEURS
+    // -----------------------------------------------------------------
+
+    case 'hotspot-users':
+        require_admin_token($config);
+        try {
+            $pdo = ara_db_supabase();
+
+            $search  = trim((string)($_GET['search'] ?? ''));
+            $profile = trim((string)($_GET['profile'] ?? 'all'));
+            $status  = trim((string)($_GET['status'] ?? 'all')); // all|active|disabled|expired
+            $conn    = trim((string)($_GET['connection'] ?? 'all')); // all|online|offline
+            $page    = max(1, (int)($_GET['page'] ?? 1));
+            $limit   = (int)($_GET['limit'] ?? 25);
+            if (!in_array($limit, [25, 50, 100], true)) {
+                $limit = 25;
+            }
+
+            $where  = '1=1';
+            $params = [];
+            if ($profile !== 'all' && $profile !== '') {
+                $where .= ' AND u.profile = ?';
+                $params[] = $profile;
+            }
+            if ($status === 'active') {
+                $where .= ' AND u.disabled = ?';
+                $params[] = 'false';
+            } elseif ($status === 'disabled') {
+                $where .= ' AND u.disabled = ?';
+                $params[] = 'true';
+            } elseif ($status === 'expired') {
+                $where .= ' AND e.expiry IS NOT NULL AND e.expiry <= ?';
+                $params[] = date('Y-m-d H:i:s');
+            }
+            if ($search !== '') {
+                $where .= ' AND (u.username ILIKE ? OR u.mac_address ILIKE ? OR u.comment ILIKE ?)';
+                $like = '%' . $search . '%';
+                $params[] = $like;
+                $params[] = $like;
+                $params[] = $like;
+            }
+
+            $baseSql = "FROM hotspot_users u LEFT JOIN hotspot_expiry e ON u.username = e.user_id WHERE $where";
+
+            // Le filtre "connexion" ne peut être appliqué qu'en mémoire :
+            // l'état en ligne/hors ligne ne vit pas dans hotspot_users
+            // (il vient du dernier snapshot poussé par le routeur), voir
+            // hotspot_online_usernames(). Dans ce cas uniquement, on
+            // renonce à la pagination SQL — le volume actuel (dizaines à
+            // basse centaine d'utilisateurs) le permet ; voir rapport
+            // final §Limitations pour la piste d'amélioration à grande échelle.
+            $onlineSet = ($conn !== 'all') ? hotspot_online_usernames($config) : null;
+
+            if ($conn !== 'all') {
+                $stmt = $pdo->prepare("SELECT u.*, e.expiry $baseSql ORDER BY u.username ASC");
+                $stmt->execute($params);
+                $all = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $filtered = [];
+                foreach ($all as $row) {
+                    $isOnline = $onlineSet !== null && in_array($row['username'], $onlineSet, true);
+                    $connState = $onlineSet === null ? 'unknown' : ($isOnline ? 'online' : 'offline');
+                    if ($conn === 'online' && $connState !== 'online') continue;
+                    if ($conn === 'offline' && $connState !== 'offline') continue;
+                    $row['_connection'] = $connState;
+                    $filtered[] = $row;
+                }
+                $total = count($filtered);
+                $pageRows = array_slice($filtered, ($page - 1) * $limit, $limit);
+            } else {
+                $countStmt = $pdo->prepare("SELECT COUNT(*) $baseSql");
+                $countStmt->execute($params);
+                $total = (int)$countStmt->fetchColumn();
+
+                $listSql = "SELECT u.*, e.expiry $baseSql ORDER BY u.username ASC LIMIT ? OFFSET ?";
+                $listParams = $params;
+                $listParams[] = $limit;
+                $listParams[] = ($page - 1) * $limit;
+                $stmt = $pdo->prepare($listSql);
+                $stmt->execute($listParams);
+                $pageRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+
+            // État de connexion pour la page courante (si pas déjà calculé ci-dessus)
+            if ($conn === 'all') {
+                $onlineSetForPage = hotspot_online_usernames($config);
+                foreach ($pageRows as &$row) {
+                    $row['_connection'] = $onlineSetForPage === null
+                        ? 'unknown'
+                        : (in_array($row['username'], $onlineSetForPage, true) ? 'online' : 'offline');
+                }
+                unset($row);
+            }
+
+            $items = array_map(function ($row) {
+                $public = hotspot_user_public_row($row);
+                $public['connection'] = $row['_connection'] ?? 'unknown';
+                return $public;
+            }, $pageRows);
+
+            // KPI globaux (indépendants des filtres courants — H2 §6)
+            $kpi = ['total' => 0, 'active' => 0, 'disabled' => 0, 'expiring' => 0];
+            try {
+                $kpi['total'] = (int)$pdo->query('SELECT COUNT(*) FROM hotspot_users')->fetchColumn();
+                $stmtA = $pdo->prepare('SELECT COUNT(*) FROM hotspot_users WHERE disabled = ?');
+                $stmtA->execute(['false']);
+                $kpi['active'] = (int)$stmtA->fetchColumn();
+                $stmtD = $pdo->prepare('SELECT COUNT(*) FROM hotspot_users WHERE disabled = ?');
+                $stmtD->execute(['true']);
+                $kpi['disabled'] = (int)$stmtD->fetchColumn();
+                // Fenêtre "expirant" (7 jours) — règle déjà en usage dans la
+                // route "dashboard" existante (expiring_subscriptions), reprise
+                // ici pour rester cohérent avec une règle métier déjà établie
+                // plutôt que d'en inventer une nouvelle (H2 §6).
+                $stmtE = $pdo->prepare(
+                    'SELECT COUNT(*) FROM hotspot_users u
+                     INNER JOIN hotspot_expiry e ON u.username = e.user_id
+                     WHERE e.expiry BETWEEN ? AND ?'
+                );
+                $stmtE->execute([date('Y-m-d H:i:s'), date('Y-m-d H:i:s', strtotime('+7 days'))]);
+                $kpi['expiring'] = (int)$stmtE->fetchColumn();
+            } catch (Throwable $e) {
+                ara_log('hotspot-users KPI error: ' . $e->getMessage(), $config, 'warning');
+            }
+
+            json_api_success([
+                'items' => $items,
+                'pagination' => [
+                    'page'  => $page,
+                    'limit' => $limit,
+                    'total' => $total,
+                    'pages' => $limit > 0 ? (int)ceil($total / $limit) : 0,
+                ],
+                'kpi' => $kpi,
+            ]);
+        } catch (Throwable $e) {
+            ara_log('hotspot-users error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Erreur lors de la récupération des utilisateurs.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_api_error('SYNC_ERROR', $msg, 500);
+        }
+        break;
+
+    case 'hotspot-user':
+        require_admin_token($config);
+        $username = trim((string)($_GET['username'] ?? ''));
+        if (!hotspot_username_valid($username)) {
+            json_api_error('INVALID_REQUEST', 'Paramètre username manquant ou invalide.', 400);
+        }
+        try {
+            $pdo = ara_db_supabase();
+            $stmt = $pdo->prepare(
+                'SELECT u.*, e.expiry FROM hotspot_users u
+                 LEFT JOIN hotspot_expiry e ON u.username = e.user_id
+                 WHERE u.username = ?'
+            );
+            $stmt->execute([$username]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                json_api_error('USER_NOT_FOUND', 'Utilisateur introuvable.', 404);
+            }
+            $onlineSet = hotspot_online_usernames($config);
+            $public = hotspot_user_public_row($row);
+            $public['connection'] = $onlineSet === null
+                ? 'unknown'
+                : (in_array($username, $onlineSet, true) ? 'online' : 'offline');
+            json_api_success($public);
+        } catch (Throwable $e) {
+            ara_log('hotspot-user error: ' . $e->getMessage(), $config, 'error');
+            json_api_error('SYNC_ERROR', 'Erreur lors de la récupération de l\'utilisateur.', 500);
+        }
+        break;
+
+    case 'hotspot-user-create':
+        require_admin_token($config);
+        require_post_method();
+        $payload  = get_request_payload();
+        $username = trim((string)($payload['username'] ?? ''));
+        $password = (string)($payload['password'] ?? '');
+        $profile  = trim((string)($payload['profile'] ?? ''));
+        $comment  = trim((string)($payload['comment'] ?? ''));
+        $expiry   = trim((string)($payload['expiry'] ?? ''));
+
+        if (!hotspot_username_valid($username)) {
+            json_api_error('INVALID_REQUEST', 'Nom d\'utilisateur manquant ou invalide.', 400);
+        }
+        if ($password === '') {
+            json_api_error('INVALID_REQUEST', 'Mot de passe requis.', 400);
+        }
+        if ($profile === '') {
+            json_api_error('INVALID_REQUEST', 'Profil requis.', 400);
+        }
+        if ($expiry !== '' && !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiry)) {
+            json_api_error('INVALID_REQUEST', 'Format d\'expiration invalide (attendu AAAA-MM-JJ HH:MM:SS).', 400);
+        }
+
+        try {
+            $pdo = ara_db_supabase();
+
+            $profileCheck = hotspot_profile_exists($pdo, $profile, $config);
+            if ($profileCheck === false) {
+                json_api_error('PROFILE_NOT_FOUND', 'Profil inconnu.', 404);
+            }
+
+            $existsStmt = $pdo->prepare('SELECT 1 FROM hotspot_users WHERE username = ?');
+            $existsStmt->execute([$username]);
+            if ($existsStmt->fetchColumn()) {
+                json_api_error('USER_EXISTS', 'Cet utilisateur existe déjà.', 409);
+            }
+
+            $insert = $pdo->prepare(
+                'INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
+                 VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
+            );
+            $insert->execute([$username, $password, $profile, '', $comment, 'false', '', '']);
+
+            if ($expiry !== '') {
+                ensure_hotspot_expiry_table($pdo);
+                $stmt = $pdo->prepare(
+                    "INSERT INTO hotspot_expiry (user_id, expiry, updated_at)
+                     VALUES (?, ?, ?)
+                     ON CONFLICT (user_id) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at"
+                );
+                $stmt->execute([$username, $expiry, date('c')]);
+                try {
+                    $pdoLocal = ara_db($config);
+                    ensure_hotspot_expiry_table($pdoLocal);
+                    $stmtLocal = $pdoLocal->prepare(
+                        'INSERT INTO hotspot_expiry (user, expiry, updated_at)
+                         VALUES (:user, :expiry, :updated_at)
+                         ON CONFLICT(user) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at'
+                    );
+                    $stmtLocal->execute([':user' => $username, ':expiry' => $expiry, ':updated_at' => date('c')]);
+                } catch (Throwable $e) {}
+            }
+
+            queue_hotspot_command($config, 'create', $username, [
+                'profile' => $profile, 'comment' => $comment, 'expiry' => $expiry ?: null, 'password' => $password,
+            ]);
+
+            json_api_success([
+                'username' => $username, 'profile' => $profile, 'comment' => $comment,
+                'disabled' => false, 'expiry' => $expiry ?: null,
+            ], 201);
+        } catch (Throwable $e) {
+            ara_log('hotspot-user-create error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Impossible de créer l\'utilisateur.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_api_error('USER_CREATE_FAILED', $msg, 500);
+        }
+        break;
+
+    case 'hotspot-user-update':
+        require_admin_token($config);
+        require_post_method();
+        $payload  = get_request_payload();
+        $username = trim((string)($payload['username'] ?? ''));
+        if (!hotspot_username_valid($username)) {
+            json_api_error('INVALID_REQUEST', 'Nom d\'utilisateur manquant ou invalide.', 400);
+        }
+
+        try {
+            $pdo = ara_db_supabase();
+            $existsStmt = $pdo->prepare('SELECT 1 FROM hotspot_users WHERE username = ?');
+            $existsStmt->execute([$username]);
+            if (!$existsStmt->fetchColumn()) {
+                json_api_error('USER_NOT_FOUND', 'Utilisateur introuvable.', 404);
+            }
+
+            $fields = [];
+            $params = [];
+
+            if (isset($payload['profile']) && trim((string)$payload['profile']) !== '') {
+                $profile = trim((string)$payload['profile']);
+                $profileCheck = hotspot_profile_exists($pdo, $profile, $config);
+                if ($profileCheck === false) {
+                    json_api_error('PROFILE_NOT_FOUND', 'Profil inconnu.', 404);
+                }
+                $fields[] = 'profile = ?';
+                $params[] = $profile;
+            }
+            if (isset($payload['comment'])) {
+                $fields[] = 'comment = ?';
+                $params[] = trim((string)$payload['comment']);
+            }
+            if (isset($payload['mac_address'])) {
+                $fields[] = 'mac_address = ?';
+                $params[] = trim((string)$payload['mac_address']);
+            }
+            if (isset($payload['password']) && (string)$payload['password'] !== '') {
+                $fields[] = 'password = ?';
+                $params[] = (string)$payload['password'];
+            }
+
+            if (!empty($fields)) {
+                $params[] = $username;
+                $sql = 'UPDATE hotspot_users SET ' . implode(', ', $fields) . ' WHERE username = ?';
+                $pdo->prepare($sql)->execute($params);
+            }
+
+            $expiry = isset($payload['expiry']) ? trim((string)$payload['expiry']) : null;
+            if ($expiry !== null && $expiry !== '') {
+                if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiry)) {
+                    json_api_error('INVALID_REQUEST', 'Format d\'expiration invalide (attendu AAAA-MM-JJ HH:MM:SS).', 400);
+                }
+                ensure_hotspot_expiry_table($pdo);
+                $stmt = $pdo->prepare(
+                    "INSERT INTO hotspot_expiry (user_id, expiry, updated_at)
+                     VALUES (?, ?, ?)
+                     ON CONFLICT (user_id) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at"
+                );
+                $stmt->execute([$username, $expiry, date('c')]);
+            }
+
+            queue_hotspot_command($config, 'update', $username, $payload);
+
+            $stmt = $pdo->prepare(
+                'SELECT u.*, e.expiry FROM hotspot_users u
+                 LEFT JOIN hotspot_expiry e ON u.username = e.user_id
+                 WHERE u.username = ?'
+            );
+            $stmt->execute([$username]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            json_api_success(hotspot_user_public_row($row ?: ['username' => $username]));
+        } catch (Throwable $e) {
+            ara_log('hotspot-user-update error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Impossible de modifier l\'utilisateur.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_api_error('USER_UPDATE_FAILED', $msg, 500);
+        }
+        break;
+
+    case 'hotspot-user-enable':
+    case 'hotspot-user-disable':
+        require_admin_token($config);
+        require_post_method();
+        $targetDisabled = ($route === 'hotspot-user-disable') ? 'true' : 'false';
+        $failCode = ($route === 'hotspot-user-disable') ? 'USER_DISABLE_FAILED' : 'USER_ENABLE_FAILED';
+        $payload  = get_request_payload();
+        $username = trim((string)($payload['username'] ?? ''));
+        if (!hotspot_username_valid($username)) {
+            json_api_error('INVALID_REQUEST', 'Nom d\'utilisateur manquant ou invalide.', 400);
+        }
+        try {
+            $pdo = ara_db_supabase();
+            $existsStmt = $pdo->prepare('SELECT disabled FROM hotspot_users WHERE username = ?');
+            $existsStmt->execute([$username]);
+            $current = $existsStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$current) {
+                json_api_error('USER_NOT_FOUND', 'Utilisateur introuvable.', 404);
+            }
+            $pdo->prepare('UPDATE hotspot_users SET disabled = ? WHERE username = ?')
+                ->execute([$targetDisabled, $username]);
+
+            queue_hotspot_command($config, $route === 'hotspot-user-disable' ? 'disable' : 'enable', $username);
+
+            json_api_success(['username' => $username, 'disabled' => $targetDisabled === 'true']);
+        } catch (Throwable $e) {
+            ara_log($route . ' error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Impossible de modifier le statut de l\'utilisateur.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_api_error($failCode, $msg, 500);
+        }
+        break;
+
+    case 'hotspot-user-delete':
+        require_admin_token($config);
+        require_post_method();
+        $payload  = get_request_payload();
+        $username = trim((string)($payload['username'] ?? ''));
+        if (!hotspot_username_valid($username)) {
+            json_api_error('INVALID_REQUEST', 'Nom d\'utilisateur manquant ou invalide.', 400);
+        }
+        try {
+            $pdo = ara_db_supabase();
+            $existsStmt = $pdo->prepare('SELECT 1 FROM hotspot_users WHERE username = ?');
+            $existsStmt->execute([$username]);
+            if (!$existsStmt->fetchColumn()) {
+                json_api_error('USER_NOT_FOUND', 'Utilisateur introuvable.', 404);
+            }
+            $pdo->prepare('DELETE FROM hotspot_users WHERE username = ?')->execute([$username]);
+            try {
+                $pdo->prepare('DELETE FROM hotspot_expiry WHERE user_id = ?')->execute([$username]);
+            } catch (Throwable $e) {}
+            try {
+                $pdoLocal = ara_db($config);
+                $pdoLocal->prepare('DELETE FROM hotspot_expiry WHERE user = ?')->execute([$username]);
+            } catch (Throwable $e) {}
+
+            queue_hotspot_command($config, 'delete', $username);
+
+            json_api_success(['username' => $username, 'deleted' => true]);
+        } catch (Throwable $e) {
+            ara_log('hotspot-user-delete error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Impossible de supprimer l\'utilisateur.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_api_error('USER_DELETE_FAILED', $msg, 500);
+        }
+        break;
 
     default:
         json_error('Route inconnue.', 404);
