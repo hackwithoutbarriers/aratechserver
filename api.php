@@ -358,12 +358,9 @@ function get_period_dates(string $period, string $customStart = '', string $cust
 
 function get_cached_network_status(array $config): array
 {
-    $cacheFile = __DIR__ . '/cache/network_status.json';
-    $cacheTime = 30; // secondes
-
-    if (file_exists($cacheFile) && (time() - filemtime($cacheFile)) < $cacheTime) {
-        $data = json_decode(file_get_contents($cacheFile), true);
-        if (is_array($data)) return $data;
+    static $status = null;
+    if ($status !== null) {
+        return $status;
     }
 
     $status = [
@@ -387,7 +384,7 @@ function get_cached_network_status(array $config): array
 
     if ($connected) {
         $status['mikrotik'] = 'ONLINE';
-        $status['internet'] = 'ONLINE'; // simplification : si le routeur répond, internet OK
+        $status['internet'] = 'ONLINE'; // simplification
 
         $interfaces = $api->comm('/interface/print');
         $api->disconnect();
@@ -405,11 +402,11 @@ function get_cached_network_status(array $config): array
                 }
             }
         }
+    } else {
+        // Journaliser l'erreur pour diagnostic
+        $errorMsg = error_get_last()['message'] ?? 'Connexion échouée';
+        ara_log('MikroTik connection failed: ' . $errorMsg, $config, 'error');
     }
-
-    // Sauvegarde cache
-    @mkdir(dirname($cacheFile), 0755, true);
-    file_put_contents($cacheFile, json_encode($status));
 
     return $status;
 }
@@ -1161,9 +1158,12 @@ try {
             ]);
         } catch (Throwable $e) {
             ara_log('dashboard error: ' . $e->getMessage(), $config, 'error');
-            json_error('Erreur lors de la récupération des données du tableau de bord.', 500);
+            $message = 'Erreur lors de la récupération des données du tableau de bord.';
+            if (!empty($config['debug'])) {
+                $message .= ' [debug] ' . $e->getMessage();
+            }
+            json_error($message, 500);
         }
-        break;
 
     default:
         json_error('Route inconnue.', 404);
