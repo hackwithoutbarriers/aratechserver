@@ -45,7 +45,7 @@ require __DIR__ . '/header.php';
             <div id="custom-dates" style="display:none;" class="d-flex align-items-center">
                 <input type="date" id="start-date" class="form-control me-1" style="width: auto;">
                 <input type="date" id="end-date" class="form-control me-1" style="width: auto;">
-                <button id="apply-custom" class="btn btn-primary">Appliquer</button>
+                <span id="custom-hint" class="text-muted ms-2" style="display:none;">Sélectionnez les deux dates</span>
             </div>
         </div>
     </div>
@@ -167,20 +167,35 @@ const apiUrl = '/api.php';
 let revenueChartInstance = null;
 
 // Éléments DOM
-const periodSelect = document.getElementById('period-select');
-const customDatesDiv = document.getElementById('custom-dates');
-const startDateInput = document.getElementById('start-date');
-const endDateInput = document.getElementById('end-date');
-const applyCustomBtn = document.getElementById('apply-custom');
-
 periodSelect.addEventListener('change', function() {
     if (this.value === 'custom') {
         customDatesDiv.style.display = 'flex';
+        // Si des dates étaient déjà sélectionnées, on relance la mise à jour
+        checkCustomDates();
     } else {
         customDatesDiv.style.display = 'none';
+        document.getElementById('custom-hint').style.display = 'none';
         fetchDashboard(this.value);
     }
 });
+const customDatesDiv = document.getElementById('custom-dates');
+const startDateInput = document.getElementById('start-date');
+const endDateInput = document.getElementById('end-date');
+// Mise à jour automatique quand les deux dates sont remplies
+function checkCustomDates() {
+    const start = startDateInput.value;
+    const end = endDateInput.value;
+    const hint = document.getElementById('custom-hint');
+    if (start && end) {
+        hint.style.display = 'none';
+        fetchDashboard('custom', start, end);
+    } else {
+        hint.style.display = 'block';
+    }
+}
+
+startDateInput.addEventListener('change', checkCustomDates);
+endDateInput.addEventListener('change', checkCustomDates);
 
 applyCustomBtn.addEventListener('click', function() {
     const start = startDateInput.value;
