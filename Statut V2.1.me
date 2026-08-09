@@ -1,0 +1,21 @@
+Rapport final — Phase Statut V2.1
+
+1. Fichiers inspectés : admin/status.php, admin/header.php, admin/auth.php, admin/index.php (référence du mécanisme d'auth JS), api.php (routes status/push-status déjà en place), db.php, config.php, lib/router.php, lib/hotspot.php, admin/active-users.php (conventions de champs RouterOS).
+
+2. Fichiers modifiés : admin/status.php uniquement.
+3. Fichiers créés : mikrotik-scripts/push-hotspot-status.rsc.
+4. Script MikroTik : réécrit pour produire le payload enrichi (active, router{identity,uptime,version,cpu,memory_total,memory_free}, users[] avec user/mac/ip/profile/uptime/bytes_in/bytes_out/server). Échappement JSON manuel (guillemets, antislash, retours ligne), valeurs absentes → null (jamais 0), chaque propriété RouterOS protégée par :do/on-error. Le "profil" est recherché via /ip hotspot user find (absent de /ip hotspot active). HTTPS/POST/X-API-Key/route inchangés.
+6. Modifications de status.php : suppression totale des requêtes SQL directes ; la page ne fait plus que auth.php + squelette HTML + un seul fetch JS vers GET api.php?route=status (même auth par token que le Dashboard : token injecté via json_encode puis passé en paramètre token).
+7. Endpoint utilisé : GET api.php?route=status (déjà implémenté côté backend, non modifié).
+8. Structure frontend : hero routeur, CPU/RAM/uptime/sessions, tableau utilisateurs (scroll horizontal mobile), grille réseau 5 composants, section synchronisation, alertes — un seul setInterval 30 s + garde anti-fetch-simultané (isFetching) + bouton "Actualiser" avec état de chargement.
+9. Gestion ONLINE/OFFLINE/UNKNOWN : formatStatus() centralisé, UNKNOWN jamais affiché comme OFFLINE, Internet/PoE/AP restent UNKNOWN sans fausse alerte.
+10. Erreurs API : bannière d'avertissement + conservation des dernières données affichées (pas d'effacement brutal).
+11. Responsive : cartes en colonne unique sur mobile, tableau scrollable, classes Bootstrap déjà en place réutilisées.
+14. Régressions : aucune — seul admin/status.php a été touché (git status confirmé).
+
+Points restants / à valider vous-même :
+
+Remplacer $apiUrl/$apiKey dans le script RouterOS et faire tourner votre clé HOTSPOT_SYNC_KEY si elle a déjà circulé en clair.
+Tester le script manuellement sur le routeur réel (/system script run push-hotspot-status) avant d'activer le scheduler — je n'ai pas pu l'exécuter sur un vrai RouterOS 7.23.2, seule la syntaxe a été vérifiée par relecture attentive (accolades équilibrées, pas de commande inventée).
+Valider le JSON reçu côté Supabase avec plusieurs utilisateurs et des usernames à caractères spéciaux.
+Tests visuels desktop/mobile (320/390/768/1024/1440px) à faire dans votre navigateur — je n'ai pas d'accès à un rendu live du dépôt.
