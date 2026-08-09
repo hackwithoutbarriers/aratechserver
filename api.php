@@ -298,6 +298,249 @@ function normalize_router_date(string $raw): string
 }
 
 // ---------------------------------------------------------------------
+// FONCTIONS — STATUT V2.1 (PHASE BACKEND)
+// ---------------------------------------------------------------------
+
+/**
+ * Seuil (en secondes) au-delà duquel un snapshot est considéré comme
+ * périmé (OFFLINE). Valeur identifiée dans admin/status.php — conservée
+ * telle quelle pour cette phase (voir §11 du brief).
+ */
+const HOTSPOT_SNAPSHOT_ONLINE_THRESHOLD = 360;
+
+/**
+ * Lit le corps de la requête pour push-status et exige un JSON valide.
+ * Contrairement à get_request_payload() (utilisée par les autres routes),
+ * cette fonction ne retombe pas silencieusement sur $_POST : un corps
+ * JSON invalide doit produire une erreur explicite (voir TEST 4 du brief).
+ * Un corps vide reste toléré (rétrocompatibilité avec d'anciens appels).
+ */
+function get_push_status_payload(): array
+{
+    $body = file_get_contents('php://input');
+    if ($body === false || trim($body) === '') {
+        return $_POST;
+    }
+    $data = json_decode($body, true);
+    if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
+        json_error('Payload JSON invalide.', 400);
+    }
+    return $data;
+}
+
+/**
+ * Validation minimale et robuste du payload push-status (voir §9 du brief).
+ * Retourne un message d'erreur (string) si le payload est invalide, ou
+ * null si tout est correct. Les champs inconnus sont ignorés.
+ */
+function validate_push_status_payload(array $payload): ?string
+{
+    if (isset($payload['active']) && $payload['active'] !== '' && !is_numeric($payload['active'])) {
+        return "Le champ 'active' doit être numérique.";
+    }
+    if (isset($payload['users']) && !is_string($payload['users']) && !is_array($payload['users'])) {
+        return "Le champ 'users' doit être une chaîne ou un tableau.";
+    }
+    if (isset($payload['router']) && !is_array($payload['router'])) {
+        return "Le champ 'router' doit être un objet.";
+    }
+    if (isset($payload['network']) && !is_array($payload['network'])) {
+        return "Le champ 'network' doit être un objet.";
+    }
+    return null;
+}
+
+/**
+ * Normalise le champ "router" du payload (identity/uptime/version/cpu/
+ * memory_total/memory_free). Une valeur absente reste NULL — jamais 0
+ * (voir §7 du brief : "CPU absent ≠ CPU 0").
+ */
+function normalize_router_payload($router): array
+{
+    if (!is_array($router)) {
+        $router = [];
+    }
+    return [
+        'identity'     => isset($router['identity']) && $router['identity'] !== '' ? (string)$router['identity'] : null,
+        'uptime'       => isset($router['uptime']) && $router['uptime'] !== '' ? (string)$router['uptime'] : null,
+        'version'      => isset($router['version']) && $router['version'] !== '' ? (string)$router['version'] : null,
+        'cpu'          => isset($router['cpu']) && is_numeric($router['cpu']) ? (float)$router['cpu'] : null,
+        'memory_total' => isset($router['memory_total']) && is_numeric($router['memory_total']) ? (int)$router['memory_total'] : null,
+        'memory_free'  => isset($router['memory_free']) && is_numeric($router['memory_free']) ? (int)$router['memory_free'] : null,
+    ];
+}
+
+/**
+ * Normalise le champ "users" du payload push-status, en acceptant :
+ * - l'ancien format (chaîne "user,mac,ip||user,mac,ip||...") ;
+ * - le nouveau format (tableau d'objets utilisateurs).
+ *
+ * Retourne toujours :
+ * - 'blob'       => représentation legacy "user,mac,ip||..." (jamais NULL,
+ *                   afin de rester compatible avec un éventuel schéma
+ *                   Supabase où users_blob serait NOT NULL — voir §5) ;
+ * - 'structured' => tableau structuré (utilisé pour users_json).
+ */
+function normalize_hotspot_users($usersRaw): array
+{
+    // Ancien format : chaîne "user,mac,ip||user,mac,ip||..."
+    if (is_string($usersRaw)) {
+        $structured = [];
+        if (trim($usersRaw) !== '') {
+            foreach (explode('||', $usersRaw) as $chunk) {
+                $chunk = trim($chunk);
+                if ($chunk === '') continue;
+                $parts = explode(',', $chunk, 3);
+                if (count($parts) === 3) {
+                    $structured[] = [
+                        'user' => $parts[0],
+                        'mac'  => $parts[1],
+                        'ip'   => $parts[2],
+                    ];
+                }
+            }
+        }
+        return ['blob' => $usersRaw, 'structured' => $structured];
+    }
+
+    // Nouveau format : tableau d'objets utilisateurs
+    if (is_array($usersRaw)) {
+        $structured = [];
+        $legacyParts = [];
+        foreach ($usersRaw as $u) {
+            if (!is_array($u)) continue;
+            $user = isset($u['user']) ? (string)$u['user'] : '';
+            $mac  = isset($u['mac'])  ? (string)$u['mac']  : '';
+            $ip   = isset($u['ip'])   ? (string)$u['ip']   : '';
+            $entry = ['user' => $user, 'mac' => $mac, 'ip' => $ip];
+            // Champs optionnels — tolérés absents (voir §8 du brief)
+            foreach (['profile', 'uptime', 'server'] as $optField) {
+                if (isset($u[$optField]) && $u[$optField] !== '') {
+                    $entry[$optField] = (string)$u[$optField];
+                }
+            }
+            foreach (['bytes_in', 'bytes_out'] as $numField) {
+                if (isset($u[$numField]) && is_numeric($u[$numField])) {
+                    $entry[$numField] = (int)$u[$numField];
+                }
+            }
+            $structured[] = $entry;
+            $legacyParts[] = $user . ',' . $mac . ',' . $ip;
+        }
+        // Représentation legacy raisonnable générée à partir du nouveau
+        // format, pour rester compatible avec un éventuel users_blob NOT NULL.
+        return ['blob' => implode('||', $legacyParts), 'structured' => $structured];
+    }
+
+    return ['blob' => '', 'structured' => []];
+}
+
+/**
+ * S'assure que les nouvelles colonnes "Statut V2.1" existent sur la table
+ * hotspot_snapshots, quel que soit le moteur (SQLite local ou Supabase/
+ * PostgreSQL). Le schéma Supabase n'est pas versionné dans ce dépôt (aucun
+ * fichier de migration trouvé) : cette fonction inspecte donc le schéma
+ * réel avant d'ajouter les colonnes manquantes, plutôt que de le supposer.
+ * N'échoue jamais silencieusement sur une base déjà à jour (aucune ALTER
+ * TABLE si les colonnes existent déjà).
+ */
+function ensure_hotspot_snapshot_columns(PDO $pdo, bool $isPostgres): void
+{
+    $columns = [
+        'router_identity' => $isPostgres ? 'TEXT'             : 'TEXT',
+        'router_uptime'   => $isPostgres ? 'TEXT'             : 'TEXT',
+        'router_version'  => $isPostgres ? 'TEXT'             : 'TEXT',
+        'cpu_load'        => $isPostgres ? 'DOUBLE PRECISION' : 'REAL',
+        'memory_total'    => $isPostgres ? 'BIGINT'           : 'INTEGER',
+        'memory_free'     => $isPostgres ? 'BIGINT'           : 'INTEGER',
+        'users_json'      => $isPostgres ? 'JSONB'            : 'TEXT',
+        'network_json'    => $isPostgres ? 'JSONB'            : 'TEXT',
+    ];
+
+    if ($isPostgres) {
+        $stmt = $pdo->prepare(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'hotspot_snapshots'"
+        );
+        $stmt->execute();
+        $existing = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    } else {
+        $stmt = $pdo->query('PRAGMA table_info(hotspot_snapshots)');
+        $existing = array_map(static fn($r) => $r['name'], $stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    foreach ($columns as $col => $type) {
+        if (!in_array($col, $existing, true)) {
+            $pdo->exec("ALTER TABLE hotspot_snapshots ADD COLUMN $col $type");
+        }
+    }
+}
+
+/**
+ * Calcule le statut ONLINE / OFFLINE / UNKNOWN du routeur (voir §11).
+ * Priorité à received_at (fiable, ISO-8601) ; à défaut, retombe sur
+ * snapshot_date + snapshot_time (mécanisme déjà utilisé par
+ * admin/status.php), afin de conserver une seule logique de référence.
+ */
+function compute_router_status(?string $snapshotDate, ?string $snapshotTime, ?string $receivedAt): array
+{
+    $last = null;
+
+    if ($receivedAt) {
+        try {
+            $last = new DateTimeImmutable($receivedAt);
+        } catch (Throwable $e) {
+            $last = null;
+        }
+    }
+
+    if (!$last && $snapshotDate && $snapshotTime) {
+        $parsed = DateTime::createFromFormat('Y-m-d H:i:s', $snapshotDate . ' ' . $snapshotTime, new DateTimeZone('UTC'));
+        if ($parsed !== false) {
+            $last = DateTimeImmutable::createFromMutable($parsed);
+        }
+    }
+
+    if (!$last) {
+        return ['status' => 'UNKNOWN', 'age_seconds' => null];
+    }
+
+    $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+    $age = $now->getTimestamp() - $last->getTimestamp();
+
+    return [
+        'status'      => $age < HOTSPOT_SNAPSHOT_ONLINE_THRESHOLD ? 'ONLINE' : 'OFFLINE',
+        'age_seconds' => $age,
+    ];
+}
+
+/**
+ * Reconstruit la liste structurée des utilisateurs à partir d'un snapshot
+ * (users_json en priorité, sinon fallback sur l'ancien users_blob).
+ */
+function extract_snapshot_users(array $snapshot): array
+{
+    if (!empty($snapshot['users_json'])) {
+        $decoded = is_string($snapshot['users_json']) ? json_decode($snapshot['users_json'], true) : $snapshot['users_json'];
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+    }
+
+    $users = [];
+    if (!empty($snapshot['users_blob'])) {
+        foreach (explode('||', $snapshot['users_blob']) as $chunk) {
+            $chunk = trim($chunk);
+            if ($chunk === '') continue;
+            $parts = explode(',', $chunk, 3);
+            if (count($parts) === 3) {
+                $users[] = ['user' => $parts[0], 'mac' => $parts[1], 'ip' => $parts[2]];
+            }
+        }
+    }
+    return $users;
+}
+
+// ---------------------------------------------------------------------
 // NOUVELLES FONCTIONS POUR LE DASHBOARD V2.1
 // ---------------------------------------------------------------------
 
@@ -889,12 +1132,45 @@ switch ($route) {
 
     case 'push-status':
         require_sync_key($config);
-        $payload = get_request_payload();
-        $activeCount = (int)($payload['active'] ?? 0);
-        $usersRaw = (string)($payload['users'] ?? '');
+        $payload = get_push_status_payload();
+
+        $validationError = validate_push_status_payload($payload);
+        if ($validationError !== null) {
+            json_error($validationError, 400);
+        }
+
+        $activeCount = isset($payload['active']) && $payload['active'] !== '' ? (int)$payload['active'] : 0;
+        $usersNormalized = normalize_hotspot_users($payload['users'] ?? '');
+        $usersBlob = $usersNormalized['blob'];
+        $usersJson = json_encode($usersNormalized['structured'], JSON_UNESCAPED_UNICODE);
+
+        $routerData = normalize_router_payload($payload['router'] ?? null);
+
+        $networkJson = null;
+        if (isset($payload['network']) && is_array($payload['network'])) {
+            $networkJson = json_encode($payload['network'], JSON_UNESCAPED_UNICODE);
+        }
+
         $now = date('c');
         $date = date('Y-m-d');
         $time = date('H:i:s');
+
+        $insertSQL = "INSERT INTO hotspot_snapshots
+            (snapshot_date, snapshot_time, active_count, users_blob, received_at,
+             router_identity, router_uptime, router_version, cpu_load, memory_total, memory_free,
+             users_json, network_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        $insertArgs = [
+            $date, $time, $activeCount, $usersBlob, $now,
+            $routerData['identity'], $routerData['uptime'], $routerData['version'],
+            $routerData['cpu'], $routerData['memory_total'], $routerData['memory_free'],
+            $usersJson, $networkJson,
+        ];
+
+        $localOk = false;
+        $supabaseOk = false;
+        $lastError = null;
+
         try {
             // 1) Locale (rapide)
             $pdo = ara_db($config);
@@ -906,23 +1182,119 @@ switch ($route) {
                 users_blob TEXT,
                 received_at TEXT NOT NULL
             )");
-            $stmt = $pdo->prepare("INSERT INTO hotspot_snapshots 
-                (snapshot_date, snapshot_time, active_count, users_blob, received_at)
-                VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$date, $time, $activeCount, $usersRaw, $now]);
-
-            // 2) Supabase (persistance)
-            $pdoSup = ara_db_supabase();
-            $stmt2 = $pdoSup->prepare("INSERT INTO hotspot_snapshots 
-                (snapshot_date, snapshot_time, active_count, users_blob, received_at)
-                VALUES (?, ?, ?, ?, ?)");
-            $stmt2->execute([$date, $time, $activeCount, $usersRaw, $now]);
-
-            json_response(['success' => true, 'active' => $activeCount]);
+            ensure_hotspot_snapshot_columns($pdo, false);
+            $stmt = $pdo->prepare($insertSQL);
+            $stmt->execute($insertArgs);
+            $localOk = true;
         } catch (Throwable $e) {
-            ara_log('api.php Push-status error: ' . $e->getMessage(), $config, 'error');
-            json_error('Erreur lors de l\'enregistrement du statut.', 500);
+            $lastError = $e;
+            ara_log('api.php Push-status (local) error: ' . $e->getMessage(), $config, 'error');
         }
+
+        try {
+            // 2) Supabase (persistance / source de vérité)
+            $pdoSup = ara_db_supabase();
+            ensure_hotspot_snapshot_columns($pdoSup, true);
+            $stmt2 = $pdoSup->prepare($insertSQL);
+            $stmt2->execute($insertArgs);
+            $supabaseOk = true;
+        } catch (Throwable $e) {
+            $lastError = $e;
+            ara_log('api.php Push-status (supabase) error: ' . $e->getMessage(), $config, 'error');
+        }
+
+        if (!$localOk && !$supabaseOk) {
+            $msg = 'Erreur lors de l\'enregistrement du statut.';
+            if (!empty($config['debug']) && $lastError) $msg .= ' [debug] ' . $lastError->getMessage();
+            json_error($msg, 500);
+        }
+
+        json_response(['ok' => true, 'success' => true, 'active' => $activeCount]);
+        break;
+
+    case 'status':
+        require_admin_token($config);
+
+        $snapshot = null;
+        $source = null;
+
+        try {
+            $pdoSup = ara_db_supabase();
+            ensure_hotspot_snapshot_columns($pdoSup, true);
+            $stmt = $pdoSup->query('SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1');
+            $snapshot = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+            $source = 'supabase';
+        } catch (Throwable $e) {
+            ara_log('api.php status (supabase) error: ' . $e->getMessage(), $config, 'error');
+        }
+
+        if ($snapshot === null && $source === null) {
+            // Supabase injoignable ou en erreur : repli sur la copie locale.
+            try {
+                $pdo = ara_db($config);
+                $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_date TEXT NOT NULL,
+                    snapshot_time TEXT NOT NULL,
+                    active_count INTEGER NOT NULL,
+                    users_blob TEXT,
+                    received_at TEXT NOT NULL
+                )");
+                ensure_hotspot_snapshot_columns($pdo, false);
+                restore_from_turso_if_empty($pdo, $config, 'hotspot_snapshots',
+                    'SELECT snapshot_date, snapshot_time, active_count, users_blob, received_at FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
+                    [],
+                    'INSERT INTO hotspot_snapshots (snapshot_date, snapshot_time, active_count, users_blob, received_at) VALUES (?, ?, ?, ?, ?)'
+                );
+                $stmt = $pdo->query('SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1');
+                $snapshot = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+                $source = 'local_sqlite';
+            } catch (Throwable $e2) {
+                ara_log('api.php status (local) error: ' . $e2->getMessage(), $config, 'error');
+                json_error('Erreur lors de la récupération du statut.', 500);
+            }
+        }
+
+        $routerStatus = compute_router_status(
+            $snapshot['snapshot_date'] ?? null,
+            $snapshot['snapshot_time'] ?? null,
+            $snapshot['received_at'] ?? null
+        );
+
+        $users = $snapshot ? extract_snapshot_users($snapshot) : [];
+
+        json_response([
+            'ok' => true,
+            'router' => [
+                'status'        => $routerStatus['status'],
+                'last_snapshot' => $snapshot ? trim(($snapshot['snapshot_date'] ?? '') . ' ' . ($snapshot['snapshot_time'] ?? '')) : null,
+                'age_seconds'   => $routerStatus['age_seconds'],
+                'identity'      => $snapshot['router_identity'] ?? null,
+                'uptime'        => $snapshot['router_uptime'] ?? null,
+                'version'       => $snapshot['router_version'] ?? null,
+                'cpu'           => isset($snapshot['cpu_load']) && $snapshot['cpu_load'] !== null ? (float)$snapshot['cpu_load'] : null,
+                'memory_total'  => isset($snapshot['memory_total']) && $snapshot['memory_total'] !== null ? (int)$snapshot['memory_total'] : null,
+                'memory_free'   => isset($snapshot['memory_free']) && $snapshot['memory_free'] !== null ? (int)$snapshot['memory_free'] : null,
+            ],
+            'sessions' => [
+                'active_count' => $snapshot ? (int)$snapshot['active_count'] : 0,
+                'users'        => $users,
+            ],
+            'network' => [
+                // Ne jamais déduire internet/poe_switch/ap_* du simple fait
+                // qu'un snapshot a été reçu (voir §12 et §13 du brief).
+                'internet'   => 'UNKNOWN',
+                'mikrotik'   => $routerStatus['status'],
+                'poe_switch' => 'UNKNOWN',
+                'ap_01'      => 'UNKNOWN',
+                'ap_02'      => 'UNKNOWN',
+            ],
+            'meta' => [
+                'source'           => 'push_snapshot',
+                'db_source'        => $source,
+                'refresh_interval' => 30,
+            ],
+        ]);
         break;
 
     case 'sync-users':
