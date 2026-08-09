@@ -51,15 +51,13 @@ require __DIR__ . '/header.php';
     </div>
 
     <!-- KPIs -->
-    <div class="row" id="kpi-cards">
-        <!-- CA -->
-        <div class="col-md-3 col-6 mb-3">
-            <div class="card card-custom text-center p-3 skeleton">
-                <div class="stat-value" id="kpi-revenue">--</div>
-                <div class="stat-label">Chiffre d'affaires</div>
-                <div class="small-text" id="kpi-revenue-var"></div>
-            </div>
-        </div>
+    <div class="row row-cols-2 row-cols-md-5 g-2" id="kpi-cards">
+        <div class="col"> <!-- CA --> </div>
+        <div class="col"> <!-- Tickets --> </div>
+        <div class="col"> <!-- Sessions --> </div>
+        <div class="col"> <!-- Abonnements --> </div>
+        <div class="col"> <!-- Réseau --> </div>
+    </div>
         <!-- Tickets -->
         <div class="col-md-3 col-6 mb-3">
             <div class="card card-custom text-center p-3 skeleton">
@@ -94,7 +92,7 @@ require __DIR__ . '/header.php';
 
     <!-- Rangée graphique + dernières ventes -->
     <div class="row">
-        <div class="col-lg-8 mb-3">
+        <div class="col-lg-8 col-12 mb-3">
             <div class="card card-custom">
                 <div class="card-header card-header-custom">Évolution du chiffre d'affaires</div>
                 <div class="card-body">
@@ -124,7 +122,7 @@ require __DIR__ . '/header.php';
     </div>
 
     <!-- Widget réseau détaillé -->
-    <div class="row mt-3">
+    <div class="row row-cols-2 row-cols-md-5 g-2" id="network-details">
         <div class="col-12">
             <div class="card card-custom">
                 <div class="card-header card-header-custom">État du réseau</div>
@@ -150,12 +148,18 @@ require __DIR__ . '/header.php';
     </div>
 
     <!-- Actions rapides -->
-    <div class="row mt-3 mb-4">
-        <div class="col-12 d-flex flex-wrap gap-2">
-            <a href="/admin/tickets.php" class="btn btn-success">🎫 Vendre ticket</a>
-            <a href="/admin/subscriptions.php" class="btn btn-warning">⭐ Abonnement</a>
-            <a href="/admin/clients.php" class="btn btn-info">👤 Client</a>
-            <a href="/admin/reports.php" class="btn btn-secondary">📊 Rapports</a>
+    <div class="row g-2">
+        <div class="col-6 col-md-auto">
+            <a href="..." class="btn btn-success w-100">🎫 Vendre ticket</a>
+        </div>
+        <div class="col-6 col-md-auto">
+            <a href="..." class="btn btn-warning w-100">⭐ Abonnement</a>
+        </div>
+        <div class="col-6 col-md-auto">
+            <a href="..." class="btn btn-info w-100">👤 Client</a>
+        </div>
+        <div class="col-6 col-md-auto">
+            <a href="..." class="btn btn-secondary w-100">📊 Rapports</a>
         </div>
     </div>
 </div>
