@@ -60,7 +60,7 @@ declare(strict_types=1);
                 <li class="nav-item"><a class="nav-link" href="logs.php"><i class="bi bi-journal-text"></i> Logs</a></li>
                 <li class="nav-item"><a class="nav-link" href="reports.php"><i class="bi bi-graph-up"></i> Rapports</a></li>
                 <li class="nav-item"><a class="nav-link" href="settings.php"><i class="bi bi-sliders"></i> Configuration</a></li>
-                <li class="nav-item"><a class="nav-link" href="traffic.php"><i class="bi bi-graph-up-arrow"></i> Trafic</a></li>
+                <!--<li class="nav-item"><a class="nav-link" href="traffic.php"><i class="bi bi-graph-up-arrow"></i> Trafic</a></li>-->
             </ul>
         </div>
     </div>
