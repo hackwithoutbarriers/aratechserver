@@ -13,7 +13,7 @@ declare(strict_types=1);
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         :root { --bleu-nuit: #0b2c82; --orange: #f5a623; }
-        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; padding-bottom: 60px; }
+        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; padding-bottom: 60px; overflow-x: hidden;}
         .navbar-custom { background: var(--bleu-nuit); }
         .navbar-brand { font-weight: 700; font-size: 1.3rem; color: #fff !important; }
         .subnavbar { background: #1a1e2b; border-bottom: 3px solid var(--orange); }
@@ -21,7 +21,7 @@ declare(strict_types=1);
         .subnavbar .nav-link:hover,
         .subnavbar .nav-link.active { color: var(--orange) !important; background: rgba(255,255,255,0.1); border-radius: 4px; }
         .subnavbar .nav-link i { margin-right: 4px; color: var(--orange); }
-        .card-custom { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 1.5rem; }
+        .card-custom { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 1.5rem; max-width: 100%;}
         .card-header-custom { background: var(--bleu-nuit); color: #fff; border-radius: 12px 12px 0 0 !important; font-weight: 600; }
         .btn-orange { background: var(--orange); border: none; color: #fff; font-weight: 600; border-radius: 8px; }
         .btn-orange:hover { background: #e5941f; color: #fff; }
