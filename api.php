@@ -407,6 +407,23 @@ function hotspot_user_public_row(array $row): array
 }
 
 /**
+ * Normalise une ligne hotspot_profiles avant retour API (H1 — contrat
+ * lecture Profils). Ne renvoie que les colonnes réellement présentes
+ * dans le schéma observé (§12 du brief) : profile_name, shared_users,
+ * rate_limit, on_login, address_pool — aucun champ SQL fictif.
+ */
+function hotspot_profile_public_row(array $row): array
+{
+    return [
+        'profile_name' => (string)($row['profile_name'] ?? ''),
+        'shared_users' => (int)($row['shared_users'] ?? 1),
+        'rate_limit'   => (string)($row['rate_limit'] ?? ''),
+        'on_login'     => (string)($row['on_login'] ?? ''),
+        'address_pool' => (string)($row['address_pool'] ?? ''),
+    ];
+}
+
+/**
  * Détermine, de façon fiable, l'ensemble des usernames actuellement en
  * ligne à partir du dernier snapshot poussé par le routeur (même source
  * que la route "status"). Si aucun snapshot récent n'est disponible,
@@ -2121,6 +2138,229 @@ if ($period === 'today' || $period === 'yesterday') {
             if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
             json_api_error('USER_DELETE_FAILED', $msg, 500);
         }
+        break;
+
+    // -----------------------------------------------------------------
+    // HOTSPOT V2.1 — CONTRAT H1 : PROFILS / SESSIONS ACTIVES / VOUCHERS
+    // (lecture uniquement — les mutations sont volontairement non
+    // implémentées à ce stade, voir §7/§16 du brief H1 et NOT_IMPLEMENTED
+    // ci-dessous). Même conventions que "H2 : UTILISATEURS" ci-dessus
+    // (json_api_success/json_api_error, require_admin_token, colonnes
+    // réellement présentes dans hotspot_profiles / hotspot_snapshots /
+    // hotspot_users — aucune table ni colonne fictive créée).
+    // -----------------------------------------------------------------
+
+    case 'hotspot-profiles':
+        require_admin_token($config);
+        try {
+            $pdo = ara_db_supabase();
+            $search = trim((string)($_GET['search'] ?? ''));
+
+            $where  = '1=1';
+            $params = [];
+            if ($search !== '') {
+                $where .= ' AND profile_name ILIKE ?';
+                $params[] = '%' . $search . '%';
+            }
+
+            $stmt = $pdo->prepare("SELECT * FROM hotspot_profiles WHERE $where ORDER BY profile_name ASC");
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $items = array_map('hotspot_profile_public_row', $rows);
+
+            json_api_success([
+                'items' => $items,
+                'total' => count($items),
+            ]);
+        } catch (Throwable $e) {
+            ara_log('hotspot-profiles error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Erreur lors de la récupération des profils.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_api_error('SYNC_ERROR', $msg, 500);
+        }
+        break;
+
+    case 'hotspot-profile':
+        require_admin_token($config);
+        $profileId = trim((string)($_GET['id'] ?? ''));
+        if ($profileId === '') {
+            json_api_error('INVALID_REQUEST', 'Paramètre id (nom du profil) manquant.', 400);
+        }
+        try {
+            $pdo = ara_db_supabase();
+            $stmt = $pdo->prepare('SELECT * FROM hotspot_profiles WHERE profile_name = ?');
+            $stmt->execute([$profileId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                json_api_error('PROFILE_NOT_FOUND', 'Profil introuvable.', 404);
+            }
+            json_api_success(hotspot_profile_public_row($row));
+        } catch (Throwable $e) {
+            ara_log('hotspot-profile error: ' . $e->getMessage(), $config, 'error');
+            json_api_error('SYNC_ERROR', 'Erreur lors de la récupération du profil.', 500);
+        }
+        break;
+
+    case 'hotspot-profile-create':
+    case 'hotspot-profile-update':
+    case 'hotspot-profile-delete':
+        require_admin_token($config);
+        require_post_method();
+        // Contrat préparé en H1 uniquement (voir §7/§17 du brief) : la
+        // mutation des profils passe aujourd'hui exclusivement par le
+        // routeur (admin/profiles.php + lib/hotspot.php, cf. audit) et
+        // n'a pas d'équivalent Render→Supabase fiable sans connexion au
+        // routeur (interdite en H1, §19/§23). Implémentation réelle
+        // prévue en phase dédiée "Profils".
+        json_api_error('NOT_IMPLEMENTED', 'Cette fonctionnalité sera disponible dans une prochaine phase.', 501);
+        break;
+
+    case 'hotspot-active':
+        require_admin_token($config);
+        try {
+            $snapshot = null;
+            try {
+                $pdo = ara_db_supabase();
+                ensure_hotspot_snapshot_columns($pdo, true);
+                $snapshot = $pdo->query('SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1')->fetch(PDO::FETCH_ASSOC) ?: null;
+            } catch (Throwable $e) {
+                try {
+                    $pdoLocal = ara_db($config);
+                    $pdoLocal->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        snapshot_date TEXT NOT NULL,
+                        snapshot_time TEXT NOT NULL,
+                        active_count INTEGER NOT NULL,
+                        users_blob TEXT,
+                        received_at TEXT NOT NULL
+                    )");
+                    ensure_hotspot_snapshot_columns($pdoLocal, false);
+                    $snapshot = $pdoLocal->query('SELECT * FROM hotspot_snapshots ORDER BY id DESC LIMIT 1')->fetch(PDO::FETCH_ASSOC) ?: null;
+                } catch (Throwable $e2) {
+                    $snapshot = null;
+                }
+            }
+
+            if (!$snapshot) {
+                json_api_success(['sessions' => [], 'count' => 0, 'source' => 'snapshot', 'status' => 'UNKNOWN']);
+            }
+
+            $routerStatus = compute_router_status(
+                $snapshot['snapshot_date'] ?? null,
+                $snapshot['snapshot_time'] ?? null,
+                $snapshot['received_at'] ?? null
+            );
+
+            if ($routerStatus['status'] !== 'ONLINE') {
+                // Ne pas transformer une absence/expiration de données en
+                // liste de sessions active fictive (§15 du brief) ; le
+                // statut réel (OFFLINE ou UNKNOWN) est transmis tel quel.
+                json_api_success([
+                    'sessions' => [],
+                    'count'    => 0,
+                    'source'   => 'snapshot',
+                    'status'   => $routerStatus['status'],
+                ]);
+            }
+
+            $sessions = extract_snapshot_users($snapshot);
+
+            json_api_success([
+                'sessions' => $sessions,
+                'count'    => count($sessions),
+                'source'   => 'snapshot',
+                'status'   => 'ONLINE',
+            ]);
+        } catch (Throwable $e) {
+            ara_log('hotspot-active error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Erreur lors de la récupération des sessions actives.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_api_error('SYNC_ERROR', $msg, 500);
+        }
+        break;
+
+    case 'hotspot-session-disconnect':
+        require_admin_token($config);
+        require_post_method();
+        // Déconnecter une session exige une commande envoyée AU routeur ;
+        // aucune voie Render→192.168.88.1 n'existe (§14/§23 du brief) et
+        // aucun mécanisme de file consommée par le routeur n'est encore
+        // en place (voir queue_hotspot_command / hotspot_commands ci-
+        // dessus, prévu pour une phase ultérieure).
+        json_api_error('NOT_IMPLEMENTED', 'Cette fonctionnalité sera disponible dans une prochaine phase.', 501);
+        break;
+
+    case 'hotspot-vouchers':
+        require_admin_token($config);
+        try {
+            $pdo = ara_db_supabase();
+
+            $search  = trim((string)($_GET['search'] ?? ''));
+            $profile = trim((string)($_GET['profile'] ?? 'all'));
+            $page    = max(1, (int)($_GET['page'] ?? 1));
+            $limit   = (int)($_GET['limit'] ?? 25);
+            if (!in_array($limit, [25, 50, 100], true)) {
+                $limit = 25;
+            }
+
+            // Aucune table de vouchers dédiée n'existe dans le dépôt
+            // (audit §16 du brief) : les vouchers sont aujourd'hui
+            // identifiés via le préfixe de commentaire "vc-"/"up-" sur
+            // hotspot_users (convention déjà utilisée par
+            // lib/voucher.php::getUsersByComment côté routeur). Cette
+            // route lit donc le même mirror Supabase que hotspot-users,
+            // filtré sur ce préfixe, plutôt que d'inventer une nouvelle
+            // architecture persistante — limitation à documenter (§17).
+            $where  = "(u.comment ILIKE 'vc-%' OR u.comment ILIKE 'up-%')";
+            $params = [];
+            if ($profile !== 'all' && $profile !== '') {
+                $where .= ' AND u.profile = ?';
+                $params[] = $profile;
+            }
+            if ($search !== '') {
+                $where .= ' AND (u.username ILIKE ? OR u.comment ILIKE ?)';
+                $like = '%' . $search . '%';
+                $params[] = $like;
+                $params[] = $like;
+            }
+
+            $baseSql = "FROM hotspot_users u LEFT JOIN hotspot_expiry e ON u.username = e.user_id WHERE $where";
+
+            $countStmt = $pdo->prepare("SELECT COUNT(*) $baseSql");
+            $countStmt->execute($params);
+            $total = (int)$countStmt->fetchColumn();
+
+            $listParams = $params;
+            $listParams[] = $limit;
+            $listParams[] = ($page - 1) * $limit;
+            $stmt = $pdo->prepare("SELECT u.*, e.expiry $baseSql ORDER BY u.username ASC LIMIT ? OFFSET ?");
+            $stmt->execute($listParams);
+            $items = array_map('hotspot_user_public_row', $stmt->fetchAll(PDO::FETCH_ASSOC));
+
+            json_api_success([
+                'items' => $items,
+                'total' => $total,
+                'page'  => $page,
+                'limit' => $limit,
+            ]);
+        } catch (Throwable $e) {
+            ara_log('hotspot-vouchers error: ' . $e->getMessage(), $config, 'error');
+            $msg = 'Erreur lors de la récupération des vouchers.';
+            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
+            json_api_error('SYNC_ERROR', $msg, 500);
+        }
+        break;
+
+    case 'hotspot-voucher-generate':
+        require_admin_token($config);
+        require_post_method();
+        // La génération avancée de vouchers (H1 §7/§16) implique une
+        // création d'utilisateurs sur le routeur (batch), hors périmètre
+        // H1 (contrat seul) et non réalisable sans connexion Render→
+        // routeur. Réutilisera hotspot-user-create (déjà implémenté en
+        // H2) une fois cette voie disponible.
+        json_api_error('NOT_IMPLEMENTED', 'Cette fonctionnalité sera disponible dans une prochaine phase.', 501);
         break;
 
     default:
