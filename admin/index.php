@@ -29,7 +29,7 @@ $pageTitle = 'Tableau de bord - ARA Tech WiFi';
 require __DIR__ . '/header.php';
 ?>
 
-<div class="container-fluid mt-4">
+<div class="container-fluid px-3 px-md-4 mt-4">
     <div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
         <h2 class="mb-2 mb-md-0">Tableau de bord</h2>
         <div class="d-flex flex-wrap align-items-center">
@@ -116,7 +116,7 @@ require __DIR__ . '/header.php';
                     <div id="sales-empty" class="text-muted text-center p-3 d-none">Aucune vente pour cette période.</div>
                 </div>
                 <div class="card-footer text-center">
-                    <a href="/admin/sales.php" class="btn btn-sm btn-outline-primary">Voir toutes les ventes</a> 
+                    <a href="/admin/sales.php" class="btn btn-sm btn-outline-primary">Voir toutes les ventes</a>
                 </div>
             </div>
         </div>
@@ -151,10 +151,10 @@ require __DIR__ . '/header.php';
     <!-- Actions rapides -->
     <div class="row mt-3 mb-4">
         <div class="col-12 d-flex flex-wrap gap-2">
-         <a href="/admin/tickets.php" class="btn btn-success">🎫 Vendre ticket</a> 
-         <a href="/admin/subscriptions.php" class="btn btn-warning">⭐ Abonnement</a> 
-          <a href="/admin/clients.php" class="btn btn-info">👤 Client</a> 
-          <a href="/admin/reports.php" class="btn btn-secondary">📊 Rapports</a>
+            <a href="/admin/tickets.php" class="btn btn-success">🎫 Vendre ticket</a>
+            <a href="/admin/subscriptions.php" class="btn btn-warning">⭐ Abonnement</a>
+            <a href="/admin/clients.php" class="btn btn-info">👤 Client</a>
+            <a href="/admin/reports.php" class="btn btn-secondary">📊 Rapports</a>
         </div>
     </div>
 </div>
@@ -165,14 +165,12 @@ document.addEventListener('DOMContentLoaded', function () {
     const apiUrl = '/api.php';
     let revenueChartInstance = null;
 
-    // Éléments DOM
     const periodSelect = document.getElementById('period-select');
     const customDatesDiv = document.getElementById('custom-dates');
     const startDateInput = document.getElementById('start-date');
     const endDateInput = document.getElementById('end-date');
     const customHint = document.getElementById('custom-hint');
 
-    // Chargement des données du dashboard
     function fetchDashboard(period, start = '', end = '') {
         document.querySelectorAll('.card-custom.skeleton').forEach(el => el.classList.add('loading'));
 
@@ -316,7 +314,6 @@ document.addEventListener('DOMContentLoaded', function () {
         return div.innerHTML;
     }
 
-    // Gestion personnalisée des dates
     function checkCustomDates() {
         const start = startDateInput.value;
         const end = endDateInput.value;
@@ -342,7 +339,6 @@ document.addEventListener('DOMContentLoaded', function () {
     startDateInput.addEventListener('change', checkCustomDates);
     endDateInput.addEventListener('change', checkCustomDates);
 
-    // Chargement initial
     fetchDashboard('thismonth');
 });
 </script>
