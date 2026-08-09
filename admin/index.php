@@ -117,7 +117,7 @@ require __DIR__ . '/header.php';
                     <div id="sales-empty" class="text-muted text-center p-3 d-none">Aucune vente pour cette période.</div>
                 </div>
                 <div class="card-footer text-center">
-                    <!-- <a href="/admin/sales.php" class="btn btn-sm btn-outline-primary">Voir toutes les ventes</a> -->
+                    <a href="/admin/sales.php" class="btn btn-sm btn-outline-primary">Voir toutes les ventes</a>
                 </div>
             </div>
         </div>
@@ -152,10 +152,10 @@ require __DIR__ . '/header.php';
     <!-- Actions rapides -->
     <div class="row mt-3 mb-4">
         <div class="col-12 d-flex flex-wrap gap-2">
-            <!-- <a href="/admin/tickets.php" class="btn btn-success">🎫 Vendre ticket</a> -->
-            <!-- <a href="/admin/subscriptions.php" class="btn btn-warning">⭐ Abonnement</a> -->
-            <!-- <a href="/admin/clients.php" class="btn btn-info">👤 Client</a> -->
-            <!-- <a href="/admin/reports.php" class="btn btn-secondary">📊 Rapports</a> -->
+            <a href="/admin/tickets.php" class="btn btn-success">🎫 Vendre ticket</a>
+            <a href="/admin/subscriptions.php" class="btn btn-warning">⭐ Abonnement</a>
+            <a href="/admin/clients.php" class="btn btn-info">👤 Client</a>
+            <a href="/admin/reports.php" class="btn btn-secondary">📊 Rapports</a>
         </div>
     </div>
 </div>
