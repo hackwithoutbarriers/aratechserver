@@ -1,36 +1,159 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/auth.php';
+require_once __DIR__ . '/../db.php';
 $config = require __DIR__ . '/../config.php';
 
 $pageTitle = 'Gestion des Stocks - ARA Tech WiFi';
 
-// ============================================================
-// DONNÉES STATIQUES (MOCK) — à remplacer par l'appel API/DB
-// à l'étape suivante (liaison Backend + Mikhmon).
-// ============================================================
-$tickets = [
-    ['code' => 'VC7f3ka2', 'profile' => '10H',  'imported_at' => '2026-08-05', 'status' => 'disponible'],
-    ['code' => 'VC9m1lp0', 'profile' => '10H',  'imported_at' => '2026-08-05', 'status' => 'disponible'],
-    ['code' => 'VCa2bme7', 'profile' => '24H',  'imported_at' => '2026-08-05', 'status' => 'vendu'],
-    ['code' => 'VCq8xtr4', 'profile' => '24H',  'imported_at' => '2026-08-06', 'status' => 'vendu'],
-    ['code' => 'VCk5wnz1', 'profile' => 'Week', 'imported_at' => '2026-08-01', 'status' => 'expire'],
-    ['code' => 'VCd4tbo9', 'profile' => 'Week', 'imported_at' => '2026-08-01', 'status' => 'disponible'],
-    ['code' => 'VCz0hqy6', 'profile' => 'Month','imported_at' => '2026-07-20', 'status' => 'vendu'],
-    ['code' => 'VCr6ujv3', 'profile' => '10H',  'imported_at' => '2026-08-07', 'status' => 'disponible'],
-    ['code' => 'VCn2gse8', 'profile' => '24H',  'imported_at' => '2026-08-02', 'status' => 'expire'],
-    ['code' => 'VCw9ipf5', 'profile' => '10H',  'imported_at' => '2026-08-07', 'status' => 'vendu'],
-];
-
-$countDisponible = count(array_filter($tickets, fn($t) => $t['status'] === 'disponible'));
-$countVendu      = count(array_filter($tickets, fn($t) => $t['status'] === 'vendu'));
-$countExpire     = count(array_filter($tickets, fn($t) => $t['status'] === 'expire'));
-
 $statusMeta = [
-    'disponible' => ['label' => 'Disponible', 'badge' => 'success', 'dot' => '🟢'],
-    'vendu'      => ['label' => 'Vendu',      'badge' => 'danger',  'dot' => '🔴'],
-    'expire'     => ['label' => 'Expiré',     'badge' => 'secondary','dot' => '⚪'],
+    'Disponible' => ['badge' => 'success',   'dot' => '🟢'],
+    'Vendu'      => ['badge' => 'danger',    'dot' => '🔴'],
+    'Expiré'     => ['badge' => 'secondary', 'dot' => '⚪'],
 ];
+
+// ============================================================
+// TRAITEMENT DE L'IMPORTATION CSV (POST)
+// ============================================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'import_csv') {
+    $file = $_FILES['csv_file'] ?? null;
+
+    if (!$file || $file['error'] !== UPLOAD_ERR_OK) {
+        $_SESSION['flash_error'] = "Erreur lors du téléversement du fichier.";
+    } elseif (strtolower((string)pathinfo($file['name'], PATHINFO_EXTENSION)) !== 'csv') {
+        $_SESSION['flash_error'] = "Le fichier doit être au format .csv.";
+    } else {
+        try {
+            $pdoSupa = ara_db_supabase();
+            ara_ensure_finance_tables($pdoSupa);
+
+            $handle = fopen($file['tmp_name'], 'r');
+            if ($handle === false) {
+                throw new RuntimeException("Impossible de lire le fichier téléversé.");
+            }
+
+            // Détection du délimiteur (Mikhmon exporte parfois en ';')
+            $firstLine = fgets($handle);
+            if ($firstLine === false) {
+                throw new RuntimeException("Fichier CSV vide.");
+            }
+            $delimiter = substr_count($firstLine, ';') > substr_count($firstLine, ',') ? ';' : ',';
+            rewind($handle);
+
+            $header = fgetcsv($handle, 0, $delimiter);
+            if ($header === false || $header === null) {
+                throw new RuntimeException("En-tête CSV illisible.");
+            }
+            // Retirer un éventuel BOM UTF-8 sur la première colonne
+            $header[0] = preg_replace('/^\x{FEFF}/u', '', (string)$header[0]);
+            $header = array_map(static fn($h) => strtolower(trim((string)$h)), $header);
+
+            $codeIdx = array_search('code', $header, true);
+            if ($codeIdx === false) {
+                $codeIdx = array_search('username', $header, true);
+            }
+            $profileIdx = array_search('profile', $header, true);
+
+            if ($codeIdx === false || $profileIdx === false) {
+                throw new RuntimeException("Colonnes 'code'/'username' et 'profile' introuvables dans l'en-tête du CSV.");
+            }
+
+            // Correspondance nom de profil -> id (table profiles)
+            $profileMap = [];
+            foreach ($pdoSupa->query("SELECT id, name FROM profiles") as $row) {
+                $profileMap[strtolower(trim((string)$row['name']))] = (int)$row['id'];
+            }
+
+            $insertStmt = $pdoSupa->prepare(
+                "INSERT INTO tickets (profile_id, code, status) VALUES (?, ?, 'Disponible')
+                 ON CONFLICT (code) DO NOTHING"
+            );
+
+            $imported = 0;
+            $skippedNoProfile = 0;
+            $skippedEmpty = 0;
+
+            while (($row = fgetcsv($handle, 0, $delimiter)) !== false) {
+                if ($row === [null] || count($row) <= max($codeIdx, $profileIdx)) {
+                    continue; // ligne vide ou incomplète
+                }
+                $code = trim((string)($row[$codeIdx] ?? ''));
+                $profileName = trim((string)($row[$profileIdx] ?? ''));
+
+                if ($code === '') {
+                    $skippedEmpty++;
+                    continue;
+                }
+                $profileId = $profileMap[strtolower($profileName)] ?? null;
+                if ($profileId === null) {
+                    $skippedNoProfile++;
+                    continue;
+                }
+                $insertStmt->execute([$profileId, $code]);
+                if ($insertStmt->rowCount() > 0) {
+                    $imported++;
+                }
+            }
+            fclose($handle);
+
+            $msg = "$imported ticket(s) importé(s) avec succès.";
+            if ($skippedNoProfile > 0) {
+                $msg .= " $skippedNoProfile ligne(s) ignorée(s) (profil inconnu dans la table profiles).";
+            }
+            if ($skippedEmpty > 0) {
+                $msg .= " $skippedEmpty ligne(s) ignorée(s) (code vide).";
+            }
+            $_SESSION['flash_success'] = $msg;
+        } catch (Throwable $e) {
+            $_SESSION['flash_error'] = "Erreur d'importation : " . $e->getMessage();
+        }
+    }
+
+    header('Location: inventory.php');
+    exit;
+}
+
+// ============================================================
+// LECTURE DES DONNÉES (Répertoire + compteurs)
+// ============================================================
+$statusFilter = $_GET['status'] ?? 'all';
+$allowedStatus = array_keys($statusMeta);
+if (!in_array($statusFilter, $allowedStatus, true)) {
+    $statusFilter = 'all';
+}
+
+$tickets = [];
+$counts = ['Disponible' => 0, 'Vendu' => 0, 'Expiré' => 0];
+$dbError = '';
+
+try {
+    $pdoSupa = ara_db_supabase();
+    ara_ensure_finance_tables($pdoSupa);
+
+    // Compteurs par statut
+    foreach ($pdoSupa->query("SELECT status, COUNT(*) AS cnt FROM tickets GROUP BY status") as $row) {
+        if (isset($counts[$row['status']])) {
+            $counts[$row['status']] = (int)$row['cnt'];
+        }
+    }
+
+    // Répertoire des tickets (avec jointure sur le nom du profil)
+    $sql = "SELECT t.code, COALESCE(p.name, '—') AS profile_name, t.imported_at, t.status
+            FROM tickets t
+            LEFT JOIN profiles p ON p.id = t.profile_id";
+    $params = [];
+    if ($statusFilter !== 'all') {
+        $sql .= " WHERE t.status = ?";
+        $params[] = $statusFilter;
+    }
+    $sql .= " ORDER BY t.imported_at DESC LIMIT 300";
+
+    $stmt = $pdoSupa->prepare($sql);
+    $stmt->execute($params);
+    $tickets = $stmt->fetchAll();
+} catch (Throwable $e) {
+    $dbError = "Connexion à la base de données impossible : " . $e->getMessage();
+}
 
 require __DIR__ . '/header.php';
 ?>
@@ -38,20 +161,39 @@ require __DIR__ . '/header.php';
 <div class="container-fluid mt-4">
     <h2 class="mb-3">📦 Gestion des Stocks</h2>
 
+    <?php if (!empty($_SESSION['flash_success'])): ?>
+        <div class="alert alert-success alert-dismissible fade show">
+            <?= htmlspecialchars($_SESSION['flash_success']) ?>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        <?php unset($_SESSION['flash_success']); ?>
+    <?php endif; ?>
+    <?php if (!empty($_SESSION['flash_error'])): ?>
+        <div class="alert alert-danger alert-dismissible fade show">
+            <?= htmlspecialchars($_SESSION['flash_error']) ?>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        <?php unset($_SESSION['flash_error']); ?>
+    <?php endif; ?>
+    <?php if ($dbError): ?>
+        <div class="alert alert-danger"><?= htmlspecialchars($dbError) ?></div>
+    <?php endif; ?>
+
     <!-- Zone d'importation CSV -->
     <div class="card card-custom">
         <div class="card-header card-header-custom"><i class="bi bi-upload"></i> Importer des codes WiFi</div>
         <div class="card-body">
-            <form id="importForm" class="row g-2 align-items-end" enctype="multipart/form-data">
+            <form method="post" action="inventory.php" enctype="multipart/form-data" class="row g-2 align-items-end">
+                <input type="hidden" name="action" value="import_csv">
                 <div class="col-md-6">
                     <label class="form-label">Fichier CSV (export Mikhmon)</label>
-                    <input type="file" class="form-control" name="csv_file" id="csv_file" accept=".csv" required>
+                    <input type="file" class="form-control" name="csv_file" accept=".csv" required>
                 </div>
                 <div class="col-md-3">
                     <button type="submit" class="btn btn-orange w-100"><i class="bi bi-file-earmark-arrow-up"></i> Importer les codes</button>
                 </div>
             </form>
-            <div class="form-text mt-2">Le fichier doit contenir les colonnes Code, Profil et Date d'import générées par Mikhmon.</div>
+            <div class="form-text mt-2">Le fichier doit contenir une colonne <code>code</code> (ou <code>username</code>) et une colonne <code>profile</code>. Les profils doivent déjà exister dans la table <code>profiles</code>.</div>
         </div>
     </div>
 
@@ -59,19 +201,19 @@ require __DIR__ . '/header.php';
     <div class="row mt-3">
         <div class="col-md-4">
             <div class="card card-custom text-center p-3">
-                <div class="stat-value text-success"><?= $countDisponible ?></div>
+                <div class="stat-value text-success"><?= $counts['Disponible'] ?></div>
                 <div class="stat-label">🟢 Tickets disponibles</div>
             </div>
         </div>
         <div class="col-md-4">
             <div class="card card-custom text-center p-3">
-                <div class="stat-value text-danger"><?= $countVendu ?></div>
+                <div class="stat-value text-danger"><?= $counts['Vendu'] ?></div>
                 <div class="stat-label">🔴 Tickets vendus</div>
             </div>
         </div>
         <div class="col-md-4">
             <div class="card card-custom text-center p-3">
-                <div class="stat-value text-secondary"><?= $countExpire ?></div>
+                <div class="stat-value text-secondary"><?= $counts['Expiré'] ?></div>
                 <div class="stat-label">⚪ Tickets expirés</div>
             </div>
         </div>
@@ -81,18 +223,16 @@ require __DIR__ . '/header.php';
     <div class="card card-custom mt-3">
         <div class="card-header card-header-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
             <span><i class="bi bi-ticket-perforated"></i> Répertoire des tickets</span>
-            <div class="d-flex align-items-center gap-2">
-                <ul class="nav nav-pills" id="statusTabs">
-                    <li class="nav-item"><button type="button" class="nav-link active" data-filter="all">Tous</button></li>
-                    <li class="nav-item"><button type="button" class="nav-link" data-filter="disponible">🟢 Disponible</button></li>
-                    <li class="nav-item"><button type="button" class="nav-link" data-filter="vendu">🔴 Vendu</button></li>
-                    <li class="nav-item"><button type="button" class="nav-link" data-filter="expire">⚪ Expiré</button></li>
-                </ul>
-            </div>
+            <ul class="nav nav-pills" id="statusTabs">
+                <li class="nav-item"><a class="nav-link <?= $statusFilter === 'all' ? 'active' : '' ?>" href="inventory.php">Tous</a></li>
+                <li class="nav-item"><a class="nav-link <?= $statusFilter === 'Disponible' ? 'active' : '' ?>" href="inventory.php?status=Disponible">🟢 Disponible</a></li>
+                <li class="nav-item"><a class="nav-link <?= $statusFilter === 'Vendu' ? 'active' : '' ?>" href="inventory.php?status=Vendu">🔴 Vendu</a></li>
+                <li class="nav-item"><a class="nav-link <?= $statusFilter === 'Expiré' ? 'active' : '' ?>" href="inventory.php?status=Expiré">⚪ Expiré</a></li>
+            </ul>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
-                <table class="table table-striped mb-0" id="ticketsTable">
+                <table class="table table-striped mb-0">
                     <thead class="table-dark">
                         <tr>
                             <th>Code WiFi</th>
@@ -102,14 +242,18 @@ require __DIR__ . '/header.php';
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($tickets as $t): $meta = $statusMeta[$t['status']]; ?>
-                        <tr data-status="<?= $t['status'] ?>">
-                            <td><code><?= htmlspecialchars($t['code']) ?></code></td>
-                            <td><?= htmlspecialchars($t['profile']) ?></td>
-                            <td><?= htmlspecialchars($t['imported_at']) ?></td>
-                            <td><span class="badge bg-<?= $meta['badge'] ?>"><?= $meta['dot'] ?> <?= $meta['label'] ?></span></td>
-                        </tr>
-                        <?php endforeach; ?>
+                        <?php if (empty($tickets)): ?>
+                            <tr><td colspan="4" class="text-center text-muted">Aucun ticket trouvé.</td></tr>
+                        <?php else: ?>
+                            <?php foreach ($tickets as $t): $meta = $statusMeta[$t['status']] ?? ['badge' => 'light', 'dot' => ''];?>
+                            <tr>
+                                <td><code><?= htmlspecialchars($t['code']) ?></code></td>
+                                <td><?= htmlspecialchars($t['profile_name']) ?></td>
+                                <td><?= htmlspecialchars((string)$t['imported_at']) ?></td>
+                                <td><span class="badge bg-<?= $meta['badge'] ?>"><?= $meta['dot'] ?> <?= htmlspecialchars($t['status']) ?></span></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -120,32 +264,9 @@ require __DIR__ . '/header.php';
 </div>
 
 <style>
-    #statusTabs .nav-link { color: var(--bleu-nuit); cursor: pointer; border-radius: 20px; padding: 0.3rem 0.9rem; font-size: 0.85rem; }
+    #statusTabs .nav-link { color: var(--bleu-nuit); border-radius: 20px; padding: 0.3rem 0.9rem; font-size: 0.85rem; }
     #statusTabs .nav-link.active { background: var(--orange); color: #fff; }
 </style>
-
-<script>
-// Simulation d'importation (frontend uniquement — pas encore de liaison backend)
-document.getElementById('importForm').addEventListener('submit', function (e) {
-    e.preventDefault();
-    const fileInput = document.getElementById('csv_file');
-    if (!fileInput.files.length) return;
-    alert('Fichier reçu (Simulation d\'importation)');
-    this.reset();
-});
-
-// Filtrage visuel du tableau par statut
-document.querySelectorAll('#statusTabs .nav-link').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-        document.querySelectorAll('#statusTabs .nav-link').forEach(b => b.classList.remove('active'));
-        this.classList.add('active');
-        const filter = this.dataset.filter;
-        document.querySelectorAll('#ticketsTable tbody tr').forEach(function (row) {
-            row.style.display = (filter === 'all' || row.dataset.status === filter) ? '' : 'none';
-        });
-    });
-});
-</script>
 
 </body>
 </html>
