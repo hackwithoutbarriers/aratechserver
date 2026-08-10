@@ -1,7 +1,7 @@
 # Hotspot V2.1 Phase H3 - Command worker (RouterOS v7 with :deserialize JSON)
 # Configure these two values after import.
 :global hotspotApiUrl "https://aratech-ldg0.onrender.com/api.php"
-:global hotspotSyncKey "lQgFtB6JyUdb72wMorus7bOdLftDwYB0uh7QzsH2BGoe8UT4joCJcYJO380EYXUcQBQZms6bC0HyJUePbWo7SEbXi1vV7fUd64yo"
+:global hotspotSyncKey "REPLACE_WITH_ROTATED_HOTSPOT_SYNC_KEY"
 
 :local routerIdentity [/system identity get name]
 :local pendingUrl ($hotspotApiUrl . "?route=hotspot-commands-pending&router_identity=" . $routerIdentity)

@@ -570,6 +570,87 @@ function hotspot_online_usernames(array $config): ?array
     return $usernames;
 }
 
+
+function ensure_hotspot_users_table(PDO $pdo): void
+{
+    $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_users (
+        username TEXT PRIMARY KEY,
+        password TEXT,
+        profile TEXT,
+        mac_address TEXT,
+        comment TEXT,
+        disabled TEXT NOT NULL DEFAULT 'false',
+        bytes_in BIGINT NOT NULL DEFAULT 0,
+        bytes_out BIGINT NOT NULL DEFAULT 0,
+        uptime TEXT,
+        server TEXT
+    )");
+
+    foreach ([
+        'password' => 'TEXT',
+        'profile' => 'TEXT',
+        'mac_address' => 'TEXT',
+        'comment' => 'TEXT',
+        'disabled' => 'TEXT',
+        'bytes_in' => 'BIGINT',
+        'bytes_out' => 'BIGINT',
+        'uptime' => 'TEXT',
+        'server' => 'TEXT',
+    ] as $column => $type) {
+        try { $pdo->exec("ALTER TABLE hotspot_users ADD COLUMN $column $type"); } catch (Throwable $e) {}
+    }
+}
+
+function normalize_hotspot_sync_user(array $u): array
+{
+    return [
+        'username' => trim((string)($u['name'] ?? $u['username'] ?? '')),
+        'password' => (string)($u['password'] ?? ''),
+        'profile' => (string)($u['profile'] ?? ''),
+        'mac_address' => (string)($u['mac-address'] ?? $u['mac_address'] ?? ''),
+        'comment' => (string)($u['comment'] ?? ''),
+        'disabled' => (($u['disabled'] ?? 'false') === 'true' || ($u['disabled'] ?? false) === true) ? 'true' : 'false',
+        'bytes_in' => (int)($u['bytes-in'] ?? $u['bytes_in'] ?? 0),
+        'bytes_out' => (int)($u['bytes-out'] ?? $u['bytes_out'] ?? 0),
+        'uptime' => (string)($u['uptime'] ?? ''),
+        'server' => (string)($u['server'] ?? ''),
+    ];
+}
+
+function upsert_hotspot_sync_user(PDO $pdo, array $u): bool
+{
+    if ($u['username'] === '') {
+        return false;
+    }
+
+    $exists = $pdo->prepare('SELECT COUNT(*) FROM hotspot_users WHERE username = ?');
+    $exists->execute([$u['username']]);
+    $count = (int)$exists->fetchColumn();
+
+    if ($count > 0) {
+        $stmt = $pdo->prepare(
+            'UPDATE hotspot_users
+             SET password = ?, profile = ?, mac_address = ?, comment = ?, disabled = ?, bytes_in = ?, bytes_out = ?, uptime = ?, server = ?
+             WHERE username = ?'
+        );
+        $stmt->execute([
+            $u['password'], $u['profile'], $u['mac_address'], $u['comment'], $u['disabled'],
+            $u['bytes_in'], $u['bytes_out'], $u['uptime'], $u['server'], $u['username'],
+        ]);
+        return true;
+    }
+
+    $stmt = $pdo->prepare(
+        'INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    $stmt->execute([
+        $u['username'], $u['password'], $u['profile'], $u['mac_address'], $u['comment'], $u['disabled'],
+        $u['bytes_in'], $u['bytes_out'], $u['uptime'], $u['server'],
+    ]);
+    return true;
+}
+
 function require_sync_key(array $config): void
 {
     $key = $_SERVER['HTTP_X_API_KEY'] ?? '';
@@ -1679,47 +1760,29 @@ switch ($route) {
         }
         try {
             $pdo = ara_db_supabase();
-            ensure_hotspot_commands_table($pdo);
-            $protectedStmt = $pdo->query(
-                "SELECT DISTINCT u.* FROM hotspot_users u
-                 JOIN hotspot_commands c ON c.username = u.username
-                 WHERE UPPER(c.status) IN ('PENDING','PROCESSING') AND c.action IN ('create','update','enable','disable')"
-            );
-            $protectedRows = $protectedStmt ? $protectedStmt->fetchAll(PDO::FETCH_ASSOC) : [];
-            // Insertion/update en batch : reflet du routeur + conservation des mutations admin pas encore ACK.
+            ensure_hotspot_users_table($pdo);
+
+            // Synchronisation idempotente et non destructive : le routeur peut
+            // envoyer un extrait (ex. 200 utilisateurs sur 507). Supprimer tout
+            // hotspot_users ici ferait diverger Supabase et MikroTik.
             $pdo->beginTransaction();
-            $pdo->exec("DELETE FROM hotspot_users");
-            $stmt = $pdo->prepare(
-                "INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            );
-            foreach ($users as $u) {
-                $stmt->execute([
-                    $u['name'] ?? '',
-                    $u['password'] ?? '',
-                    $u['profile'] ?? '',
-                    $u['mac-address'] ?? '',
-                    $u['comment'] ?? '',
-                    ($u['disabled'] ?? 'false') === 'true' ? 'true' : 'false',
-                    (int)($u['bytes-in'] ?? 0),
-                    (int)($u['bytes-out'] ?? 0),
-                    $u['uptime'] ?? '',
-                    $u['server'] ?? '',
-                ]);
-            }
-            $restore = $pdo->prepare(
-                "INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (username) DO NOTHING"
-            );
-            foreach ($protectedRows as $u) {
-                $restore->execute([
-                    $u['username'] ?? '', $u['password'] ?? '', $u['profile'] ?? '', $u['mac_address'] ?? '',
-                    $u['comment'] ?? '', $u['disabled'] ?? 'false', (int)($u['bytes_in'] ?? 0), (int)($u['bytes_out'] ?? 0),
-                    $u['uptime'] ?? '', $u['server'] ?? '',
-                ]);
+            $processed = 0;
+            $skipped = 0;
+            foreach ($users as $rawUser) {
+                if (!is_array($rawUser)) {
+                    $skipped++;
+                    continue;
+                }
+                $user = normalize_hotspot_sync_user($rawUser);
+                if (!upsert_hotspot_sync_user($pdo, $user)) {
+                    $skipped++;
+                    continue;
+                }
+                $processed++;
             }
             $pdo->commit();
-            json_response(['success' => true, 'count' => count($users)]);
+            ara_log('sync-users: received=' . count($users) . ' processed=' . $processed . ' skipped=' . $skipped, $config, 'info');
+            json_response(['success' => true, 'count' => $processed, 'skipped' => $skipped]);
         } catch (Throwable $e) {
             if (isset($pdo)) $pdo->rollBack();
             json_error('Erreur sync-users: ' . $e->getMessage(), 500);
