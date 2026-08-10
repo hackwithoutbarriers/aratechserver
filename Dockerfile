@@ -1,31 +1,34 @@
 FROM php:8.2-apache
 
-# Installer SQLite + PostgreSQL
 RUN apt-get update && apt-get install -y \
     libsqlite3-dev \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Extensions PHP
 RUN docker-php-ext-install pdo pdo_sqlite pdo_pgsql
+RUN a2enmod rewrite headers
 
-# Activer mod_rewrite
-RUN a2enmod rewrite
-
-# Copier les fichiers
 COPY . /var/www/html/
 
-# Blocage des fichiers sensibles
-RUN echo '<FilesMatch "^(config|db|RouterosAPI)\.php$">' \
-    > /etc/apache2/conf-available/block-sensitive.conf \
-    && echo '    Require all denied' \
-    >> /etc/apache2/conf-available/block-sensitive.conf \
-    && echo '</FilesMatch>' \
-    >> /etc/apache2/conf-available/block-sensitive.conf \
-    && a2enconf block-sensitive
+RUN printf '%s\n' \
+    '<FilesMatch "^(config|db|RouterosAPI)\\.php$|^\\.env($|\\.)|^composer\\.(json|lock)$">' \
+    '    Require all denied' \
+    '</FilesMatch>' \
+    '' \
+    '<DirectoryMatch "^/var/www/html/(\\.git|tests|docs|database|mikrotik|data)(/|$)">' \
+    '    Require all denied' \
+    '</DirectoryMatch>' \
+    '' \
+    'Header always unset Access-Control-Allow-Origin' \
+    'Header always unset Access-Control-Allow-Credentials' \
+    'Header always unset Access-Control-Allow-Methods' \
+    'Header always unset Access-Control-Allow-Headers' \
+    > /etc/apache2/conf-available/security-phase1.conf \
+    && a2enconf security-phase1
 
-# Permissions
 RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 755 /var/www/html
+    && find /var/www/html -type d -exec chmod 755 {} \; \
+    && find /var/www/html -type f -exec chmod 644 {} \; \
+    && chmod -R u+rwX /var/www/html/data
 
 EXPOSE 80

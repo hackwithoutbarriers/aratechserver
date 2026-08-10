@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+
+/data/*.sqlite
+/data/*.sqlite-*
+/data/*.log
+
+*.pem
+*.key
+*.crt
