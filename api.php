@@ -307,22 +307,18 @@ function require_post_method(): void
     }
 }
 
+function require_get_method(): void
+{
+    if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+        json_api_error('INVALID_REQUEST', 'Cette route nécessite une requête GET.', 405);
+    }
+}
+
 /**
- * Table de file de commandes MikroTik (H2 §19).
+ * Table de file de commandes MikroTik (H2/H3).
  *
- * Aucun mécanisme de file (command/queue/job/pending/sync/push/action)
- * n'a été trouvé ailleurs dans le dépôt lors de l'audit H2 : la seule
- * voie existante Render → routeur est le "push" initié PAR le routeur
- * (push-status, sync-users, sync-profiles, set-expiry). Le Render ne
- * peut pas ouvrir de connexion vers 192.168.88.1.
- *
- * Cette table est donc une structure MINIMALE : elle enregistre
- * l'intention (create/update/enable/disable/delete) pour qu'un futur
- * script MikroTik/scheduler (à écrire en H3, sur le modèle de
- * push-hotspot-status.rsc) puisse la consommer via une route de type
- * "GET api.php?route=hotspot-commands-pending" (NON implémentée ici)
- * et confirmer l'exécution. Pour l'instant, aucune consommation
- * automatique n'existe : voir le rapport final §11/§18.
+ * Le Render ne se connecte jamais au routeur privé : les commandes sont
+ * persistées puis réclamées par le MikroTik via HTTPS polling.
  */
 function ensure_hotspot_commands_table(PDO $pdo): void
 {
@@ -331,30 +327,125 @@ function ensure_hotspot_commands_table(PDO $pdo): void
         action TEXT NOT NULL,
         username TEXT NOT NULL,
         payload TEXT,
-        status TEXT NOT NULL DEFAULT \'pending\',
+        status TEXT NOT NULL DEFAULT \'PENDING\',
         created_at TEXT NOT NULL,
-        processed_at TEXT
+        processing_at TEXT,
+        processed_at TEXT,
+        router_identity TEXT,
+        result TEXT,
+        message TEXT
     )');
+
+    foreach ([
+        'processing_at' => 'TEXT',
+        'router_identity' => 'TEXT',
+        'result' => 'TEXT',
+        'message' => 'TEXT',
+    ] as $column => $type) {
+        try { $pdo->exec("ALTER TABLE hotspot_commands ADD COLUMN $column $type"); } catch (Throwable $e) {}
+    }
+    try { $pdo->exec("UPDATE hotspot_commands SET status = UPPER(status) WHERE status <> UPPER(status)"); } catch (Throwable $e) {}
 }
 
-function queue_hotspot_command(array $config, string $action, string $username, array $payload = []): void
+function hotspot_command_limit(array $config): int
+{
+    $limit = (int)($config['hotspot']['command_poll_limit'] ?? 10);
+    return max(1, min($limit, 25));
+}
+
+function hotspot_command_stale_seconds(array $config): int
+{
+    $seconds = (int)($config['hotspot']['command_processing_timeout'] ?? 900);
+    return max(60, $seconds);
+}
+
+function hotspot_allowed_actions(): array
+{
+    return ['create', 'update', 'enable', 'disable', 'delete'];
+}
+
+function hotspot_validate_command_payload(string $action, array $payload): ?string
+{
+    if (!in_array($action, hotspot_allowed_actions(), true)) return 'Action inconnue.';
+    $username = trim((string)($payload['username'] ?? ''));
+    if ($username === '' || !hotspot_username_valid($username)) return 'Username requis ou invalide.';
+    if ($action === 'create' && (string)($payload['password'] ?? '') === '') return 'Password requis.';
+    return null;
+}
+
+function queue_hotspot_command(array $config, string $action, string $username, array $payload = []): ?int
 {
     try {
+        $action = strtolower($action);
+        if (!in_array($action, hotspot_allowed_actions(), true)) {
+            throw new InvalidArgumentException('Action hotspot inconnue.');
+        }
         $pdo = ara_db_supabase();
         ensure_hotspot_commands_table($pdo);
-        // Ne jamais persister le mot de passe en clair dans la file de commandes.
-        unset($payload['password']);
+        $payload['username'] = $username;
+        $validation = hotspot_validate_command_payload($action, $payload);
+        if ($validation !== null) {
+            throw new InvalidArgumentException($validation);
+        }
         $stmt = $pdo->prepare(
             'INSERT INTO hotspot_commands (action, username, payload, status, created_at)
-             VALUES (?, ?, ?, \'pending\', ?)'
+             VALUES (?, ?, ?, \'PENDING\', ?) RETURNING id'
         );
         $stmt->execute([$action, $username, json_encode($payload, JSON_UNESCAPED_UNICODE), date('c')]);
+        $id = $stmt->fetchColumn();
+        return $id !== false ? (int)$id : null;
     } catch (Throwable $e) {
-        // La file de commandes est une amélioration H2 non bloquante :
-        // si elle échoue, la mutation Supabase elle-même n'est pas annulée,
-        // mais on trace l'échec (jamais le mot de passe).
         ara_log('hotspot_commands queue error (' . $action . '/' . $username . '): ' . $e->getMessage(), $config, 'error');
+        return null;
     }
+}
+
+function hotspot_command_public(array $row, bool $includePayload = false): array
+{
+    $out = [
+        'id' => (int)$row['id'],
+        'action' => (string)$row['action'],
+        'status' => strtoupper((string)$row['status']),
+        'message' => (string)($row['message'] ?? $row['result'] ?? ''),
+        'created_at' => $row['created_at'] ?? null,
+        'processing_at' => $row['processing_at'] ?? null,
+        'processed_at' => $row['processed_at'] ?? null,
+    ];
+    if ($includePayload) {
+        $payload = json_decode((string)($row['payload'] ?? '{}'), true);
+        if (!is_array($payload)) $payload = [];
+        $payload['username'] = $payload['username'] ?? (string)$row['username'];
+        $out['payload'] = $payload;
+    }
+    return $out;
+}
+
+function claim_hotspot_commands(PDO $pdo, array $config, string $routerIdentity): array
+{
+    ensure_hotspot_commands_table($pdo);
+    $limit = hotspot_command_limit($config);
+    $staleCutoff = gmdate('c', time() - hotspot_command_stale_seconds($config));
+    $candidates = $pdo->prepare(
+        "SELECT id FROM hotspot_commands
+         WHERE UPPER(status) = 'PENDING'
+            OR (UPPER(status) = 'PROCESSING' AND processing_at IS NOT NULL AND processing_at < ?)
+         ORDER BY created_at ASC, id ASC LIMIT $limit"
+    );
+    $candidates->execute([$staleCutoff]);
+    $items = [];
+    $claim = $pdo->prepare(
+        "UPDATE hotspot_commands
+         SET status = 'PROCESSING', processing_at = ?, router_identity = ?
+         WHERE id = ? AND (UPPER(status) = 'PENDING'
+            OR (UPPER(status) = 'PROCESSING' AND processing_at IS NOT NULL AND processing_at < ?))
+         RETURNING id, action, username, payload, status, created_at, processing_at, processed_at, message, result"
+    );
+    foreach ($candidates->fetchAll(PDO::FETCH_COLUMN) as $id) {
+        $claim->execute([date('c'), $routerIdentity, $id, $staleCutoff]);
+        $row = $claim->fetch(PDO::FETCH_ASSOC);
+        if ($row) $items[] = hotspot_command_public($row, true);
+    }
+    return $items;
 }
 
 /**
@@ -484,7 +575,7 @@ function require_sync_key(array $config): void
     $key = $_SERVER['HTTP_X_API_KEY'] ?? '';
     $expected = $config['hotspot']['sync_key'] ?? '';
     if ($expected === '' || !hash_equals($expected, $key)) {
-        json_error('Non autorisé.', 403);
+        json_api_error('UNAUTHORIZED', 'Non autorisé.', 401);
     }
 }
 
@@ -1020,6 +1111,86 @@ switch ($route) {
         json_response(['success' => true, 'items' => active_items($items)]);
         break;
 
+    case 'hotspot-commands-pending':
+        require_get_method();
+        require_sync_key($config);
+        try {
+            $routerIdentity = trim((string)($_GET['router_identity'] ?? $_SERVER['HTTP_X_ROUTER_IDENTITY'] ?? 'MikroTik'));
+            if ($routerIdentity === '') $routerIdentity = 'MikroTik';
+            $pdo = ara_db_supabase();
+            $items = claim_hotspot_commands($pdo, $config, $routerIdentity);
+            json_api_success(['items' => array_map(static function (array $item): array {
+                return [
+                    'id' => $item['id'],
+                    'action' => $item['action'],
+                    'payload' => $item['payload'],
+                ];
+            }, $items)]);
+        } catch (Throwable $e) {
+            ara_log('hotspot-commands-pending error: ' . $e->getMessage(), $config, 'error');
+            json_api_error('COMMAND_PENDING_FAILED', 'Impossible de récupérer les commandes.', 500);
+        }
+        break;
+
+    case 'hotspot-command-ack':
+        require_post_method();
+        require_sync_key($config);
+        $payload = get_request_payload();
+        $commandId = (int)($payload['command_id'] ?? 0);
+        if ($commandId <= 0) {
+            json_api_error('INVALID_REQUEST', 'command_id requis.', 400);
+        }
+        $ok = filter_var($payload['success'] ?? false, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        if ($ok === null) {
+            json_api_error('INVALID_REQUEST', 'success booléen requis.', 400);
+        }
+        $message = trim((string)($payload['message'] ?? ($ok ? 'executed' : 'failed')));
+        $message = substr(str_replace(["\r", "\n"], ' ', $message), 0, 180);
+        try {
+            $pdo = ara_db_supabase();
+            ensure_hotspot_commands_table($pdo);
+            $status = $ok ? 'EXECUTED' : 'FAILED';
+            $stmt = $pdo->prepare(
+                "UPDATE hotspot_commands
+                 SET status = ?, processed_at = ?, result = ?, message = ?
+                 WHERE id = ? AND UPPER(status) = 'PROCESSING'
+                 RETURNING id, action, status, created_at, processing_at, processed_at, message, result"
+            );
+            $stmt->execute([$status, date('c'), $message, $message, $commandId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                $check = $pdo->prepare('SELECT id, action, status, created_at, processing_at, processed_at, message, result FROM hotspot_commands WHERE id = ?');
+                $check->execute([$commandId]);
+                $existing = $check->fetch(PDO::FETCH_ASSOC);
+                if (!$existing) json_api_error('COMMAND_NOT_FOUND', 'Commande introuvable.', 404);
+                json_api_error('COMMAND_STATE_CONFLICT', 'La commande n’est pas en cours de traitement.', 409);
+            }
+            json_api_success(hotspot_command_public($row));
+        } catch (Throwable $e) {
+            ara_log('hotspot-command-ack error command_id=' . $commandId . ': ' . $e->getMessage(), $config, 'error');
+            json_api_error('COMMAND_ACK_FAILED', 'Impossible d’enregistrer l’ACK.', 500);
+        }
+        break;
+
+    case 'hotspot-command-status':
+        require_get_method();
+        require_admin_token($config);
+        $commandId = (int)($_GET['id'] ?? 0);
+        if ($commandId <= 0) json_api_error('INVALID_REQUEST', 'id requis.', 400);
+        try {
+            $pdo = ara_db_supabase();
+            ensure_hotspot_commands_table($pdo);
+            $stmt = $pdo->prepare('SELECT id, action, status, created_at, processing_at, processed_at, message, result FROM hotspot_commands WHERE id = ?');
+            $stmt->execute([$commandId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) json_api_error('COMMAND_NOT_FOUND', 'Commande introuvable.', 404);
+            json_api_success(hotspot_command_public($row));
+        } catch (Throwable $e) {
+            ara_log('hotspot-command-status error: ' . $e->getMessage(), $config, 'error');
+            json_api_error('COMMAND_STATUS_FAILED', 'Impossible de lire le statut de la commande.', 500);
+        }
+        break;
+
     case 'set-expiry':
         require_sync_key($config);
         $payload = get_request_payload();
@@ -1508,9 +1679,15 @@ switch ($route) {
         }
         try {
             $pdo = ara_db_supabase();
-            // Insertion/update en batch (on peut vider la table avant ou faire un upsert)
+            ensure_hotspot_commands_table($pdo);
+            $protectedStmt = $pdo->query(
+                "SELECT DISTINCT u.* FROM hotspot_users u
+                 JOIN hotspot_commands c ON c.username = u.username
+                 WHERE UPPER(c.status) IN ('PENDING','PROCESSING') AND c.action IN ('create','update','enable','disable')"
+            );
+            $protectedRows = $protectedStmt ? $protectedStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+            // Insertion/update en batch : reflet du routeur + conservation des mutations admin pas encore ACK.
             $pdo->beginTransaction();
-            // Vider la table pour refléter l'état exact du routeur (optionnel)
             $pdo->exec("DELETE FROM hotspot_users");
             $stmt = $pdo->prepare(
                 "INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
@@ -1528,6 +1705,17 @@ switch ($route) {
                     (int)($u['bytes-out'] ?? 0),
                     $u['uptime'] ?? '',
                     $u['server'] ?? '',
+                ]);
+            }
+            $restore = $pdo->prepare(
+                "INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (username) DO NOTHING"
+            );
+            foreach ($protectedRows as $u) {
+                $restore->execute([
+                    $u['username'] ?? '', $u['password'] ?? '', $u['profile'] ?? '', $u['mac_address'] ?? '',
+                    $u['comment'] ?? '', $u['disabled'] ?? 'false', (int)($u['bytes_in'] ?? 0), (int)($u['bytes_out'] ?? 0),
+                    $u['uptime'] ?? '', $u['server'] ?? '',
                 ]);
             }
             $pdo->commit();
@@ -1976,13 +2164,14 @@ if ($period === 'today' || $period === 'yesterday') {
                 } catch (Throwable $e) {}
             }
 
-            queue_hotspot_command($config, 'create', $username, [
+            $commandId = queue_hotspot_command($config, 'create', $username, [
                 'profile' => $profile, 'comment' => $comment, 'expiry' => $expiry ?: null, 'password' => $password,
             ]);
 
             json_api_success([
                 'username' => $username, 'profile' => $profile, 'comment' => $comment,
                 'disabled' => false, 'expiry' => $expiry ?: null,
+                'command' => ['id' => $commandId, 'status' => 'PENDING'],
             ], 201);
         } catch (Throwable $e) {
             ara_log('hotspot-user-create error: ' . $e->getMessage(), $config, 'error');
@@ -2054,7 +2243,7 @@ if ($period === 'today' || $period === 'yesterday') {
                 $stmt->execute([$username, $expiry, date('c')]);
             }
 
-            queue_hotspot_command($config, 'update', $username, $payload);
+            $commandId = queue_hotspot_command($config, 'update', $username, $payload);
 
             $stmt = $pdo->prepare(
                 'SELECT u.*, e.expiry FROM hotspot_users u
@@ -2063,7 +2252,9 @@ if ($period === 'today' || $period === 'yesterday') {
             );
             $stmt->execute([$username]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            json_api_success(hotspot_user_public_row($row ?: ['username' => $username]));
+            $public = hotspot_user_public_row($row ?: ['username' => $username]);
+            $public['command'] = ['id' => $commandId, 'status' => 'PENDING'];
+            json_api_success($public);
         } catch (Throwable $e) {
             ara_log('hotspot-user-update error: ' . $e->getMessage(), $config, 'error');
             $msg = 'Impossible de modifier l\'utilisateur.';
@@ -2094,9 +2285,9 @@ if ($period === 'today' || $period === 'yesterday') {
             $pdo->prepare('UPDATE hotspot_users SET disabled = ? WHERE username = ?')
                 ->execute([$targetDisabled, $username]);
 
-            queue_hotspot_command($config, $route === 'hotspot-user-disable' ? 'disable' : 'enable', $username);
+            $commandId = queue_hotspot_command($config, $route === 'hotspot-user-disable' ? 'disable' : 'enable', $username);
 
-            json_api_success(['username' => $username, 'disabled' => $targetDisabled === 'true']);
+            json_api_success(['username' => $username, 'disabled' => $targetDisabled === 'true', 'command' => ['id' => $commandId, 'status' => 'PENDING']]);
         } catch (Throwable $e) {
             ara_log($route . ' error: ' . $e->getMessage(), $config, 'error');
             $msg = 'Impossible de modifier le statut de l\'utilisateur.';
@@ -2129,9 +2320,9 @@ if ($period === 'today' || $period === 'yesterday') {
                 $pdoLocal->prepare('DELETE FROM hotspot_expiry WHERE user = ?')->execute([$username]);
             } catch (Throwable $e) {}
 
-            queue_hotspot_command($config, 'delete', $username);
+            $commandId = queue_hotspot_command($config, 'delete', $username);
 
-            json_api_success(['username' => $username, 'deleted' => true]);
+            json_api_success(['username' => $username, 'deleted' => true, 'command' => ['id' => $commandId, 'status' => 'PENDING']]);
         } catch (Throwable $e) {
             ara_log('hotspot-user-delete error: ' . $e->getMessage(), $config, 'error');
             $msg = 'Impossible de supprimer l\'utilisateur.';

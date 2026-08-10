@@ -524,16 +524,16 @@ try {
 
         try {
             if (formMode === 'create') {
-                await hotspotApi('hotspot-user-create', {
+                const created = await hotspotApi('hotspot-user-create', {
                     method: 'POST',
                     body: { username, password, profile, comment, expiry },
                 });
-                toast('Utilisateur créé avec succès.');
+                toast(commandToast(created, 'Commande de création envoyée. En attente du routeur.'));
             } else {
                 const body = { username: formOriginalUsername, profile, comment, expiry };
                 if (password) body.password = password;
-                await hotspotApi('hotspot-user-update', { method: 'POST', body });
-                toast('Utilisateur modifié avec succès.');
+                const updated = await hotspotApi('hotspot-user-update', { method: 'POST', body });
+                toast(commandToast(updated, 'Commande de modification envoyée. En attente du routeur.'));
             }
             bootstrap.Modal.getInstance(document.getElementById('userFormModal')).hide();
             loadUsers();
@@ -545,13 +545,20 @@ try {
         }
     });
 
+
+    function commandToast(result, fallback) {
+        const cmd = result?.command;
+        if (!cmd?.id) return fallback;
+        return `${fallback} Commande #${cmd.id} (${cmd.status || 'PENDING'}).`;
+    }
+
     // ---- Activation / désactivation / suppression ----------------------
     async function toggleUser(username, disable) {
         try {
-            await hotspotApi(disable ? 'hotspot-user-disable' : 'hotspot-user-enable', {
+            const result = await hotspotApi(disable ? 'hotspot-user-disable' : 'hotspot-user-enable', {
                 method: 'POST', body: { username },
             });
-            toast(disable ? '✓ Utilisateur désactivé.' : '✓ Utilisateur activé.');
+            toast(commandToast(result, disable ? 'Commande de désactivation envoyée. En attente du routeur.' : 'Commande d’activation envoyée. En attente du routeur.'));
             loadUsers();
         } catch (e) {
             toast('✕ ' + (e.message || (disable ? 'Impossible de désactiver l\'utilisateur.' : 'Impossible d\'activer l\'utilisateur.')), false);
@@ -561,8 +568,8 @@ try {
     async function deleteUser(username) {
         if (!confirm(`Voulez-vous vraiment supprimer ${username} ? Cette opération peut être irréversible.`)) return;
         try {
-            await hotspotApi('hotspot-user-delete', { method: 'POST', body: { username } });
-            toast('✓ Utilisateur supprimé avec succès.');
+            const result = await hotspotApi('hotspot-user-delete', { method: 'POST', body: { username } });
+            toast(commandToast(result, 'Commande de suppression envoyée. En attente du routeur.'));
             loadUsers();
         } catch (e) {
             toast('✕ ' + (e.message || 'Impossible de supprimer l\'utilisateur.'), false);
