@@ -22,6 +22,8 @@ return [
     // Hotspot (sync key)
     'hotspot' => [
         'sync_key' => getenv('HOTSPOT_SYNC_KEY') ?: '',
+        'command_poll_limit' => (int)(getenv('HOTSPOT_COMMAND_POLL_LIMIT') ?: 10),
+        'command_processing_timeout' => (int)(getenv('HOTSPOT_COMMAND_PROCESSING_TIMEOUT') ?: 900),
     ],
 
     // Admin
