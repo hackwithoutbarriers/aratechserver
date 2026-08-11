@@ -38,16 +38,16 @@ require __DIR__ . '/header.php';
         <?php
         switch ($activeTab) {
             case 'profiles':
-                include __DIR__ . '/profiles.php';
+                include __DIR__ . 'profiles.php';
                 break;
             case 'active':
-                include __DIR__ . '/active-users.php';
+                include __DIR__ . 'active-users.php';
                 break;
             case 'vouchers':
-                include __DIR__ . '/vouchers.php';
+                include __DIR__ . 'vouchers.php';
                 break;
             default:
-                include __DIR__ . '/users.php';
+                include __DIR__ . 'users.php';
         }
         ?>
     </div>
