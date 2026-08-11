@@ -1,6 +1,12 @@
 <?php
 declare(strict_types=1);
 // Ce fichier est inclus par hotspot.php (auth.php déjà chargé).
+// SÉCURITÉ : accessible en direct par URL sans ce garde (voir active-users.php
+// pour le détail du problème) — cette page permet de créer/modifier/désactiver/
+// supprimer des utilisateurs hotspot, donc l'absence de contrôle était critique.
+if (empty($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+    require_once __DIR__ . '/auth.php';
+}
 // Page "Utilisateurs" V2.1 / Phase H2 : interface API-first.
 // Toutes les données (liste, KPI, détail) et toutes les mutations
 // (création, modification, activation, désactivation, suppression)

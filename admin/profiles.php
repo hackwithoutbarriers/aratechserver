@@ -1,54 +1,73 @@
 <?php
 declare(strict_types=1);
-// Inclus par admin/hotspot.php
-require_once __DIR__ . '/../db.php';
-
-$profiles = [];
-$error = '';
-
-try {
-    $pdoSupa = ara_db_supabase();
-    $stmt = $pdoSupa->query('SELECT profile_name, shared_users, rate_limit, on_login, address_pool, last_sync FROM hotspot_profiles ORDER BY profile_name ASC');
-    $profiles = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    $error = 'Erreur lors du chargement des profils : ' . $e->getMessage();
+// Inclus comme onglet par admin/hotspot.php (auth.php déjà chargé par hotspot.php).
+// Reste défensif si jamais ce fichier est un jour appelé isolément.
+if (empty($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+    require_once __DIR__ . '/auth.php';
 }
+require_once __DIR__ . '/../lib/api_client.php';
+
+$search = trim((string)($_GET['search'] ?? ''));
+
+$result = ara_api_call($config, 'hotspot-profiles', $search !== '' ? ['search' => $search] : []);
+$profiles = $result['success'] ? ($result['data']['items'] ?? []) : [];
+$error    = $result['success'] ? null : $result['message'];
 ?>
 
-<div class="card card-custom">
-    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-        <h3 class="mb-0"><i class="bi bi-pie-chart-fill"></i> Profils Hotspot (<?= count($profiles) ?>)</h3>
+<form method="get" class="row g-2 align-items-end mb-3">
+    <input type="hidden" name="tab" value="profiles">
+    <div class="col-md-4">
+        <label class="form-label">Rechercher un profil</label>
+        <input type="text" name="search" class="form-control" value="<?= htmlspecialchars($search) ?>" placeholder="Nom du profil">
     </div>
-    <div class="card-body p-0">
-        <?php if ($error): ?>
-            <div class="alert alert-danger m-3"><?= htmlspecialchars($error) ?></div>
-        <?php elseif (empty($profiles)): ?>
-            <div class="alert alert-info m-3">Aucun profil trouvé en base de données. Effectuez une synchronisation depuis le routeur MikroTik.</div>
-        <?php else: ?>
+    <div class="col-md-2">
+        <button type="submit" class="btn btn-orange w-100"><i class="bi bi-search"></i> Filtrer</button>
+    </div>
+</form>
+
+<?php if ($error): ?>
+    <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
+<?php else: ?>
+    <div class="alert alert-info">
+        <i class="bi bi-info-circle"></i>
+        La création et la modification de profils depuis cette interface arrivent dans une prochaine phase
+        (l'API confirme le contrat mais l'exécution routeur n'est pas encore branchée).
+        Cet onglet affiche l'état actuellement synchronisé depuis MikroTik.
+    </div>
+
+    <div class="card card-custom">
+        <div class="card-header card-header-custom">
+            Profils Hotspot (<?= count($profiles) ?>)
+        </div>
+        <div class="card-body p-0">
             <div class="table-responsive">
-                <table class="table table-bordered table-hover align-middle mb-0">
-                    <thead class="table-dark">
+                <table class="table table-striped mb-0">
+                    <thead>
                         <tr>
-                            <th>Nom du Profil</th>
-                            <th class="text-center">Utilisateurs Simultanés</th>
-                            <th>Limite de Débit (Rate Limit)</th>
-                            <th>Pool d'Adresses</th>
-                            <th>Dernière Synchronisation</th>
+                            <th>Nom</th>
+                            <th>Utilisateurs partagés</th>
+                            <th>Limite de débit</th>
+                            <th>Pool d'adresses</th>
+                            <th>Script on-login</th>
                         </tr>
                     </thead>
                     <tbody>
-                    <?php foreach ($profiles as $p): ?>
-                        <tr>
-                            <td class="fw-bold"><?= htmlspecialchars($p['profile_name']) ?></td>
-                            <td class="text-center"><span class="badge bg-info text-dark"><?= (int)$p['shared_users'] ?></span></td>
-                            <td><code><?= htmlspecialchars($p['rate_limit'] ?: 'Illimité') ?></code></td>
-                            <td><?= htmlspecialchars($p['address_pool'] ?: 'Par défaut') ?></td>
-                            <td class="small text-muted"><?= htmlspecialchars($p['last_sync'] ?: 'N/D') ?></td>
-                        </tr>
-                    <?php endforeach; ?>
+                        <?php if (empty($profiles)): ?>
+                            <tr><td colspan="5" class="text-center text-muted">Aucun profil trouvé.</td></tr>
+                        <?php else: ?>
+                            <?php foreach ($profiles as $p): ?>
+                            <tr>
+                                <td><strong><?= htmlspecialchars($p['profile_name'] ?? '') ?></strong></td>
+                                <td><?= (int)($p['shared_users'] ?? 1) ?></td>
+                                <td><?= htmlspecialchars($p['rate_limit'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($p['address_pool'] ?? '') ?></td>
+                                <td><code><?= htmlspecialchars($p['on_login'] ?? '') ?></code></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
-        <?php endif; ?>
+        </div>
     </div>
-</div>
+<?php endif; ?>

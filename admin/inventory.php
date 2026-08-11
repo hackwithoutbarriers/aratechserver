@@ -44,7 +44,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
         }
 
         $pdoSupa = ara_db_supabase();
-        ara_ensure_finance_tables($pdoSupa);
+        // Le schéma (tables `profiles` et `tickets`) est garanti par
+        // database/migrations/009_commercial_profiles_tickets.sql, à exécuter
+        // sur Supabase avant déploiement. L'appel à ara_ensure_finance_tables(),
+        // une fonction qui n'a jamais été définie nulle part dans ce dépôt,
+        // provoquait une Fatal Error PHP à chaque accès à cette page.
 
         $handle = fopen($file['tmp_name'], 'r');
         if ($handle === false) {
@@ -144,7 +148,8 @@ $dbError = '';
 
 try {
     $pdoSupa = ara_db_supabase();
-    ara_ensure_finance_tables($pdoSupa);
+    // Voir la note ci-dessus : schéma garanti par la migration 009, pas de
+    // création de table à l'exécution.
     foreach ($pdoSupa->query("SELECT status, COUNT(*) AS cnt FROM tickets GROUP BY status") as $row) {
         if (isset($counts[$row['status']])) {
             $counts[$row['status']] = (int)$row['cnt'];

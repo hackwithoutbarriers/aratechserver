@@ -1,10 +1,17 @@
 <?php
 declare(strict_types=1);
-// Inclus par admin/hotspot.php
+// SÉCURITÉ : ce fichier est normalement inclus comme onglet par hotspot.php,
+// qui charge auth.php en premier. Mais PHP ne bloque pas l'accès direct par
+// URL (ex: /admin/active-users.php) : sans ce garde, la page s'exécutait
+// alors SANS AUCUNE vérification de session, exposant la gestion des
+// utilisateurs connectés à tout visiteur non authentifié. On ne réappelle
+// auth.php que si la session n'est pas déjà validée (cas de l'inclusion
+// normale via hotspot.php), pour ne pas relancer session_start() à double.
+if (empty($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+    require_once __DIR__ . '/auth.php';
+}
 require_once __DIR__ . '/../lib/RouterosAPI.php';
 require_once __DIR__ . '/../lib/hotspot.php';
-require_once __DIR__ . '/../lib/format.php';
-
 $config = require __DIR__ . '/../config.php';
 
 $hotspot = new Hotspot($config['mikrotik']);
@@ -35,7 +42,8 @@ if (isset($_GET['remove-active'])) {
     exit;
 }
 
-$view = $_GET['view'] ?? 'users';
+// Onglet "Sessions actives" – accessible via ?tab=active&view=sessions
+$view = $_GET['view'] ?? 'users'; // 'users' ou 'sessions'
 
 if ($view === 'sessions') {
     $activeSessions = $hotspot->getActiveSessions();
@@ -65,8 +73,8 @@ if ($view === 'sessions') {
                     <tbody>
                     <?php foreach ($activeSessions as $s):
                         $uptime = isset($s['uptime']) ? formatDTM($s['uptime']) : '';
-                        $bytesi = isset($s['bytes-in']) ? formatBytes((float)$s['bytes-in'], 2) : '';
-                        $byteso = isset($s['bytes-out']) ? formatBytes((float)$s['bytes-out'], 2) : '';
+                        $bytesi = isset($s['bytes-in']) ? formatBytes($s['bytes-in'], 2) : '';
+                        $byteso = isset($s['bytes-out']) ? formatBytes($s['bytes-out'], 2) : '';
                         $timeLeft = isset($s['session-time-left']) ? formatDTM($s['session-time-left']) : '';
                     ?>
                         <tr>
@@ -95,6 +103,7 @@ if ($view === 'sessions') {
     </div>
     <?php
 } else {
+    // Onglet "Utilisateurs enregistrés"
     $profileFilter = $_GET['profile'] ?? 'all';
     $commentFilter = $_GET['comment'] ?? '';
     $users = $hotspot->getUsers([
@@ -110,6 +119,7 @@ if ($view === 'sessions') {
             <a href="hotspot.php?tab=active&view=sessions" class="btn btn-sm btn-orange"><i class="bi bi-wifi"></i> Sessions actives</a>
         </div>
         <div class="card-body p-0">
+            <!-- Filtres rapides -->
             <form method="get" class="p-2 bg-light border-bottom">
                 <input type="hidden" name="tab" value="active">
                 <div class="row g-2">
@@ -152,8 +162,8 @@ if ($view === 'sessions') {
                         $uprofile = $u['profile'] ?? '';
                         $umac = $u['mac-address'] ?? '';
                         $uuptime = isset($u['uptime']) ? formatDTM($u['uptime']) : '';
-                        $ubytesi = isset($u['bytes-in']) ? formatBytes((float)$u['bytes-in'], 2) : '';
-                        $ubyteso = isset($u['bytes-out']) ? formatBytes((float)$u['bytes-out'], 2) : '';
+                        $ubytesi = isset($u['bytes-in']) ? formatBytes($u['bytes-in'], 2) : '';
+                        $ubyteso = isset($u['bytes-out']) ? formatBytes($u['bytes-out'], 2) : '';
                         $ucomment = $u['comment'] ?? '';
                         $udisabled = ($u['disabled'] ?? '') === 'true';
                     ?>
@@ -191,3 +201,22 @@ if ($view === 'sessions') {
 }
 
 $hotspot->disconnect();
+
+// Helpers de formatage (à remplacer par l'inclusion de lib/format.php plus tard)
+function formatDTM($val) {
+    if (is_string($val)) {
+        $parts = explode(':', $val);
+        if (count($parts) === 3) {
+            $sec = (int)$parts[0]*3600 + (int)$parts[1]*60 + (int)$parts[2];
+        } else return $val;
+    } else $sec = (int)$val;
+    if ($sec < 0) $sec = 0;
+    $d = floor($sec/86400); $h = floor(($sec%86400)/3600); $m = floor(($sec%3600)/60); $s = $sec%60;
+    return ($d>0 ? "{$d}j " : "") . sprintf('%02d:%02d:%02d', $h, $m, $s);
+}
+function formatBytes($bytes, $prec=2) {
+    if ($bytes <= 0) return '0 B';
+    $units = ['B','KB','MB','GB','TB'];
+    $i = floor(log($bytes,1024));
+    return round($bytes/pow(1024,$i), $prec).' '.$units[$i];
+}
