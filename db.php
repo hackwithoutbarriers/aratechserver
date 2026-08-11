@@ -47,7 +47,7 @@ function ara_db(array $config): PDO
         updated_at    TEXT
     )");
 
-    // Table des transactions (gardée pour une éventuelle réactivation)
+    // Table des transactions
     $pdo->exec("CREATE TABLE IF NOT EXISTS transactions (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
         identifier        TEXT UNIQUE NOT NULL,
@@ -72,10 +72,49 @@ function ara_log(string $message, array $config, string $level = 'info'): void
     );
 }
 
-// ---------------------------------------------------------------------
-// Fonctions Turso (centralisées ici pour être utilisées partout)
-// ---------------------------------------------------------------------
+/**
+ * Connexion à la base PostgreSQL Supabase.
+ */
+function ara_db_supabase(): PDO
+{
+    $host     = trim(getenv('SUPABASE_PGHOST')     ?: 'aws-1-eu-west-1.pooler.supabase.com');
+    $port     = trim(getenv('SUPABASE_PGPORT')     ?: '6543');
+    $dbname   = trim(getenv('SUPABASE_PGDATABASE') ?: 'postgres');
+    $user     = trim(getenv('SUPABASE_PGUSER')     ?: 'postgres.pqmmuaavceftkovzrhyg');
+    $password = trim(getenv('SUPABASE_PGPASSWORD') ?: '');
 
+    $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
+    $pdo = new PDO($dsn, $user, $password, [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ]);
+    $pdo->exec("SET statement_timeout = '10s'");
+    return $pdo;
+}
+
+/**
+ * Garantit la présence des tables de gestion commerciale/stocks dans Supabase.
+ * Corrige le bug "Fatal Error: Call to undefined function ara_ensure_finance_tables()".
+ */
+function ara_ensure_finance_tables(PDO $pdo): void
+{
+    $pdo->exec("CREATE TABLE IF NOT EXISTS profiles (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL
+    )");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS tickets (
+        id BIGSERIAL PRIMARY KEY,
+        profile_id BIGINT NOT NULL REFERENCES profiles(id) ON DELETE RESTRICT,
+        code TEXT UNIQUE NOT NULL,
+        status TEXT NOT NULL DEFAULT 'Disponible',
+        imported_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )");
+}
+
+// ---------------------------------------------------------------------
+// Fonctions Turso (Sauvegarde / Synchronisation de secours)
+// ---------------------------------------------------------------------
 function turso_pipeline(array $config, array $stmts): array
 {
     if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
@@ -152,13 +191,11 @@ function turso_rows(array $result): array
 
 function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, string $tursoQuery, array $tursoArgs, string $insertLocalSQL): bool
 {
-    // Vérifier si la locale est vide
     $stmt = $pdo->query("SELECT COUNT(*) FROM $table");
     if ((int)$stmt->fetchColumn() > 0) {
         return false;
     }
 
-    // Turso configuré ?
     if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
         return false;
     }
@@ -184,25 +221,4 @@ function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, str
         // Silencieux
     }
     return false;
-}
-
-/**
- * Connexion à la base PostgreSQL Supabase.
- * Les paramètres proviennent des variables d'environnement Render.
- */
-function ara_db_supabase(): PDO
-{
-    $host     = trim(getenv('SUPABASE_PGHOST')     ?: 'aws-1-eu-west-1.pooler.supabase.com');
-    $port     = trim(getenv('SUPABASE_PGPORT')     ?: '6543');
-    $dbname   = trim(getenv('SUPABASE_PGDATABASE') ?: 'postgres');
-    $user     = trim(getenv('SUPABASE_PGUSER')     ?: 'postgres.pqmmuaavceftkovzrhyg');
-    $password = trim(getenv('SUPABASE_PGPASSWORD') ?: '');
-
-    $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
-    $pdo = new PDO($dsn, $user, $password, [
-        PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
-    $pdo->exec("SET statement_timeout = '10s'");
-    return $pdo;
 }
