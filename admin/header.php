@@ -56,6 +56,7 @@ declare(strict_types=1);
                 <li class="nav-item"><a class="nav-link" href="index.php"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
                 <li class="nav-item"><a class="nav-link" href="status.php"><i class="bi bi-wifi"></i> Statut</a></li>
                 <li class="nav-item"><a class="nav-link" href="hotspot.php"><i class="bi bi-people"></i> Hotspot</a></li>
+                <li class="nav-item"><a class="nav-link" href="user-import.php"><i class="bi bi-file-earmark-arrow-up"></i> Import CSV Hotspot</a></li>
                 <li class="nav-item"><a class="nav-link" href="inventory.php"><i class="bi bi-box-seam"></i> Gestion des Stocks</a></li>
                 <li class="nav-item"><a class="nav-link" href="finances.php"><i class="bi bi-cash-coin"></i> Finances</a></li>
                 <li class="nav-item"><a class="nav-link" href="ads.php"><i class="bi bi-megaphone"></i> Annonces</a></li>
