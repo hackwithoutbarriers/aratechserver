@@ -25,7 +25,7 @@ if ($action === 'print' && !empty($users)) {
     <head>
         <meta charset="UTF-8">
         <title>Impression des vouchers</title>
-        <script src="../js/qrious.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js"></script>
         <style>body { font-family: 'Helvetica', Arial, sans-serif; margin: 0; } @media print { table { page-break-after: auto; } tr { page-break-inside: avoid; } } table.voucher { display: inline-block; border: 2px solid black; margin: 2px; } .qrcode { height:80px; width:80px; }</style>
     </head>
     <body onload="window.print()">
@@ -84,7 +84,6 @@ $voucher->disconnect();
                         </tbody>
                     </table>
                 </div>
-                <div class="form-text">Les mots de passe sont masqués par défaut et ne sont révélés qu'après action explicite.</div>
             </div>
         <?php endif; ?>
     </div>
