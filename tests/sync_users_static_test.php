@@ -16,11 +16,15 @@ if ($start === false || $end === false) {
 $block = substr($api, $start, $end - $start);
 
 $assertions = [
-    'sync-users ne vide pas hotspot_users' => strpos($block, 'DELETE FROM hotspot_users') === false,
-    'sync-users prépare le schéma utilisateur' => strpos($block, 'ensure_hotspot_users_table($pdo)') !== false,
-    'sync-users fait un traitement idempotent par utilisateur' => strpos($block, 'upsert_hotspot_sync_user($pdo, $user)') !== false,
-    'sync-users journalise le volume reçu/traité' => strpos($block, "sync-users: received=") !== false,
+    'sync-users ne supprime pas le miroir' => strpos($block, 'DELETE FROM hotspot_users') === false,
+    'sync-users utilise le schéma Phase 2 sans CREATE TABLE' => strpos($block, 'CREATE TABLE IF NOT EXISTS hotspot_users') === false,
+    'sync-users normalise les limites' => strpos($api, "'limit_uptime'") !== false && strpos($api, "'limit_bytes_total'") !== false,
+    'sync-users fait un UPSERT par username' => strpos($api, 'ON CONFLICT (username) DO UPDATE SET') !== false,
+    'sync-users renseigne last_sync' => strpos($api, 'last_sync') !== false,
+    'sync-profiles renseigne last_sync' => strpos($api, 'ON CONFLICT (profile_name) DO UPDATE SET') !== false && strpos($api, 'last_sync = EXCLUDED.last_sync') !== false,
+    'les mutations web ne mettent pas a jour le miroir avant ACK' => strpos($api, 'UPDATE hotspot_users SET disabled = ? WHERE username = ?') === false,
 ];
+
 
 $failed = 0;
 foreach ($assertions as $label => $ok) {

@@ -43,6 +43,8 @@
             "mac-address"=($u->"mac-address");
             "comment"=($u->"comment");
             "disabled"=($u->"disabled");
+            "limit-uptime"=($u->"limit-uptime");
+            "limit-bytes-total"=($u->"limit-bytes-total");
             "bytes-in"=($u->"bytes-in");
             "bytes-out"=($u->"bytes-out");
             "uptime"=($u->"uptime");

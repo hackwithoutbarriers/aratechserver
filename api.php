@@ -322,29 +322,8 @@ function require_get_method(): void
  */
 function ensure_hotspot_commands_table(PDO $pdo): void
 {
-    $pdo->exec('CREATE TABLE IF NOT EXISTS hotspot_commands (
-        id BIGSERIAL PRIMARY KEY,
-        action TEXT NOT NULL,
-        username TEXT NOT NULL,
-        payload TEXT,
-        status TEXT NOT NULL DEFAULT \'PENDING\',
-        created_at TEXT NOT NULL,
-        processing_at TEXT,
-        processed_at TEXT,
-        router_identity TEXT,
-        result TEXT,
-        message TEXT
-    )');
-
-    foreach ([
-        'processing_at' => 'TEXT',
-        'router_identity' => 'TEXT',
-        'result' => 'TEXT',
-        'message' => 'TEXT',
-    ] as $column => $type) {
-        try { $pdo->exec("ALTER TABLE hotspot_commands ADD COLUMN $column $type"); } catch (Throwable $e) {}
-    }
-    try { $pdo->exec("UPDATE hotspot_commands SET status = UPPER(status) WHERE status <> UPPER(status)"); } catch (Throwable $e) {}
+    // Supabase/PostgreSQL schema is owned by database/migrations.
+    // Runtime PHP must not create or mutate the Phase 2 schema.
 }
 
 function hotspot_command_limit(array $config): int
@@ -418,6 +397,109 @@ function hotspot_command_public(array $row, bool $includePayload = false): array
         $out['payload'] = $payload;
     }
     return $out;
+}
+
+function apply_hotspot_command_ack(PDO $pdo, string $action, string $username, array $payload): void
+{
+    switch ($action) {
+        case 'create':
+            $stmt = $pdo->prepare(
+                'INSERT INTO hotspot_users
+                    (username, password, profile, mac_address, comment, disabled,
+                     limit_uptime, limit_bytes_total, bytes_in, bytes_out, uptime, server, last_sync)
+                 VALUES (?, ?, ?, ?, ?, ?, ?::interval, ?, 0, 0, ?, ?, ?)
+                 ON CONFLICT (username) DO UPDATE SET
+                    password = EXCLUDED.password,
+                    profile = EXCLUDED.profile,
+                    comment = EXCLUDED.comment,
+                    disabled = EXCLUDED.disabled,
+                    limit_uptime = EXCLUDED.limit_uptime,
+                    limit_bytes_total = EXCLUDED.limit_bytes_total,
+                    last_sync = EXCLUDED.last_sync'
+            );
+            $stmt->execute([
+                $username,
+                (string)($payload['password'] ?? ''),
+                (string)($payload['profile'] ?? 'default'),
+                '',
+                (string)($payload['comment'] ?? ''),
+                'false',
+                (($payload['limit_uptime'] ?? $payload['limit-uptime'] ?? '') !== '')
+                    ? (string)($payload['limit_uptime'] ?? $payload['limit-uptime'])
+                    : null,
+                (($payload['limit_bytes_total'] ?? $payload['limit-bytes-total'] ?? null) === '' ? null :
+                    (($payload['limit_bytes_total'] ?? $payload['limit-bytes-total'] ?? null) !== null
+                        ? (int)($payload['limit_bytes_total'] ?? $payload['limit-bytes-total'])
+                        : null)),
+                '',
+                '',
+                date('c')
+            ]);
+            if (!empty($payload['expiry'])) {
+                $pdo->prepare(
+                    'INSERT INTO hotspot_expiry (user_id, expiry, updated_at)
+                     VALUES (?, ?, ?)
+                     ON CONFLICT (user_id) DO UPDATE SET expiry = EXCLUDED.expiry, updated_at = EXCLUDED.updated_at'
+                )->execute([$username, (string)$payload['expiry'], date('c')]);
+            }
+            break;
+
+        case 'update':
+            $fields = [];
+            $params = [];
+            if (array_key_exists('profile', $payload) && trim((string)$payload['profile']) !== '') {
+                $fields[] = 'profile = ?';
+                $params[] = trim((string)$payload['profile']);
+            }
+            if (array_key_exists('comment', $payload)) {
+                $fields[] = 'comment = ?';
+                $params[] = (string)$payload['comment'];
+            }
+            if (array_key_exists('mac_address', $payload)) {
+                $fields[] = 'mac_address = ?';
+                $params[] = trim((string)$payload['mac_address']);
+            }
+            if (array_key_exists('password', $payload) && (string)$payload['password'] !== '') {
+                $fields[] = 'password = ?';
+                $params[] = (string)$payload['password'];
+            }
+            if (array_key_exists('limit_uptime', $payload) || array_key_exists('limit-uptime', $payload)) {
+                $value = $payload['limit_uptime'] ?? $payload['limit-uptime'];
+                $fields[] = 'limit_uptime = ?::interval';
+                $params[] = ($value === '' || $value === null) ? null : (string)$value;
+            }
+            if (array_key_exists('limit_bytes_total', $payload) || array_key_exists('limit-bytes-total', $payload)) {
+                $value = $payload['limit_bytes_total'] ?? $payload['limit-bytes-total'];
+                $fields[] = 'limit_bytes_total = ?';
+                $params[] = ($value === '' || $value === null) ? null : (int)$value;
+            }
+            if ($fields) {
+                $params[] = $username;
+                $pdo->prepare('UPDATE hotspot_users SET ' . implode(', ', $fields) . ', last_sync = ? WHERE username = ?')
+                    ->execute(array_merge(array_slice($params, 0, -1), [date('c'), $username]));
+            }
+            if (array_key_exists('expiry', $payload) && trim((string)$payload['expiry']) !== '') {
+                $pdo->prepare(
+                    'INSERT INTO hotspot_expiry (user_id, expiry, updated_at)
+                     VALUES (?, ?, ?)
+                     ON CONFLICT (user_id) DO UPDATE SET expiry = EXCLUDED.expiry, updated_at = EXCLUDED.updated_at'
+                )->execute([$username, trim((string)$payload['expiry']), date('c')]);
+            }
+            break;
+
+        case 'enable':
+        case 'disable':
+            $pdo->prepare('UPDATE hotspot_users SET disabled = ?, last_sync = ? WHERE username = ?')
+                ->execute([$action === 'disable' ? 'true' : 'false', date('c'), $username]);
+            break;
+
+        case 'delete':
+            $pdo->prepare('DELETE FROM hotspot_users WHERE username = ?')->execute([$username]);
+            try {
+                $pdo->prepare('DELETE FROM hotspot_expiry WHERE user_id = ?')->execute([$username]);
+            } catch (Throwable $e) {}
+            break;
+    }
 }
 
 function claim_hotspot_commands(PDO $pdo, array $config, string $routerIdentity): array
@@ -573,36 +655,20 @@ function hotspot_online_usernames(array $config): ?array
 
 function ensure_hotspot_users_table(PDO $pdo): void
 {
-    $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_users (
-        username TEXT PRIMARY KEY,
-        password TEXT,
-        profile TEXT,
-        mac_address TEXT,
-        comment TEXT,
-        disabled TEXT NOT NULL DEFAULT 'false',
-        bytes_in BIGINT NOT NULL DEFAULT 0,
-        bytes_out BIGINT NOT NULL DEFAULT 0,
-        uptime TEXT,
-        server TEXT
-    )");
-
-    foreach ([
-        'password' => 'TEXT',
-        'profile' => 'TEXT',
-        'mac_address' => 'TEXT',
-        'comment' => 'TEXT',
-        'disabled' => 'TEXT',
-        'bytes_in' => 'BIGINT',
-        'bytes_out' => 'BIGINT',
-        'uptime' => 'TEXT',
-        'server' => 'TEXT',
-    ] as $column => $type) {
-        try { $pdo->exec("ALTER TABLE hotspot_users ADD COLUMN $column $type"); } catch (Throwable $e) {}
-    }
+    // Supabase/PostgreSQL schema is owned by database/migrations.
+    // Runtime PHP must not create or mutate the Phase 2 schema.
 }
 
 function normalize_hotspot_sync_user(array $u): array
 {
+    $limitBytes = $u['limit-bytes-total'] ?? $u['limit_bytes_total'] ?? null;
+    if ($limitBytes === '' || $limitBytes === null) {
+        $limitBytes = null;
+    } else {
+        $limitBytes = (int)$limitBytes; // preserves a valid 0
+    }
+
+    $limitUptime = (string)($u['limit-uptime'] ?? $u['limit_uptime'] ?? '');
     return [
         'username' => trim((string)($u['name'] ?? $u['username'] ?? '')),
         'password' => (string)($u['password'] ?? ''),
@@ -610,6 +676,8 @@ function normalize_hotspot_sync_user(array $u): array
         'mac_address' => (string)($u['mac-address'] ?? $u['mac_address'] ?? ''),
         'comment' => (string)($u['comment'] ?? ''),
         'disabled' => (($u['disabled'] ?? 'false') === 'true' || ($u['disabled'] ?? false) === true) ? 'true' : 'false',
+        'limit_uptime' => $limitUptime !== '' ? $limitUptime : null,
+        'limit_bytes_total' => $limitBytes,
         'bytes_in' => (int)($u['bytes-in'] ?? $u['bytes_in'] ?? 0),
         'bytes_out' => (int)($u['bytes-out'] ?? $u['bytes_out'] ?? 0),
         'uptime' => (string)($u['uptime'] ?? ''),
@@ -623,30 +691,29 @@ function upsert_hotspot_sync_user(PDO $pdo, array $u): bool
         return false;
     }
 
-    $exists = $pdo->prepare('SELECT COUNT(*) FROM hotspot_users WHERE username = ?');
-    $exists->execute([$u['username']]);
-    $count = (int)$exists->fetchColumn();
-
-    if ($count > 0) {
-        $stmt = $pdo->prepare(
-            'UPDATE hotspot_users
-             SET password = ?, profile = ?, mac_address = ?, comment = ?, disabled = ?, bytes_in = ?, bytes_out = ?, uptime = ?, server = ?
-             WHERE username = ?'
-        );
-        $stmt->execute([
-            $u['password'], $u['profile'], $u['mac_address'], $u['comment'], $u['disabled'],
-            $u['bytes_in'], $u['bytes_out'], $u['uptime'], $u['server'], $u['username'],
-        ]);
-        return true;
-    }
-
     $stmt = $pdo->prepare(
-        'INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO hotspot_users
+            (username, password, profile, mac_address, comment, disabled,
+             limit_uptime, limit_bytes_total, bytes_in, bytes_out, uptime, server, last_sync)
+         VALUES (?, ?, ?, ?, ?, ?, ?::interval, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (username) DO UPDATE SET
+             password = EXCLUDED.password,
+             profile = EXCLUDED.profile,
+             mac_address = EXCLUDED.mac_address,
+             comment = EXCLUDED.comment,
+             disabled = EXCLUDED.disabled,
+             limit_uptime = EXCLUDED.limit_uptime,
+             limit_bytes_total = EXCLUDED.limit_bytes_total,
+             bytes_in = EXCLUDED.bytes_in,
+             bytes_out = EXCLUDED.bytes_out,
+             uptime = EXCLUDED.uptime,
+             server = EXCLUDED.server,
+             last_sync = EXCLUDED.last_sync'
     );
     $stmt->execute([
-        $u['username'], $u['password'], $u['profile'], $u['mac_address'], $u['comment'], $u['disabled'],
-        $u['bytes_in'], $u['bytes_out'], $u['uptime'], $u['server'],
+        $u['username'], $u['password'], $u['profile'], $u['mac_address'], $u['comment'],
+        $u['disabled'], $u['limit_uptime'], $u['limit_bytes_total'],
+        $u['bytes_in'], $u['bytes_out'], $u['uptime'], $u['server'], date('c')
     ]);
     return true;
 }
@@ -1227,9 +1294,39 @@ switch ($route) {
         }
         $message = trim((string)($payload['message'] ?? ($ok ? 'executed' : 'failed')));
         $message = substr(str_replace(["\r", "\n"], ' ', $message), 0, 180);
+
         try {
             $pdo = ara_db_supabase();
             ensure_hotspot_commands_table($pdo);
+            $pdo->beginTransaction();
+
+            $lookup = $pdo->prepare(
+                'SELECT id, action, username, payload, status, created_at, processing_at, processed_at, message, result
+                 FROM hotspot_commands WHERE id = ? FOR UPDATE'
+            );
+            $lookup->execute([$commandId]);
+            $command = $lookup->fetch(PDO::FETCH_ASSOC);
+            if (!$command) {
+                $pdo->rollBack();
+                json_api_error('COMMAND_NOT_FOUND', 'Commande introuvable.', 404);
+            }
+            if (strtoupper((string)$command['status']) !== 'PROCESSING') {
+                $pdo->rollBack();
+                json_api_error('COMMAND_STATE_CONFLICT', 'La commande n’est pas en cours de traitement.', 409);
+            }
+
+            if ($ok) {
+                $commandPayload = json_decode((string)($command['payload'] ?? '{}'), true);
+                if (!is_array($commandPayload)) $commandPayload = [];
+                $commandPayload['username'] = (string)$command['username'];
+                apply_hotspot_command_ack(
+                    $pdo,
+                    strtolower((string)$command['action']),
+                    (string)$command['username'],
+                    $commandPayload
+                );
+            }
+
             $status = $ok ? 'EXECUTED' : 'FAILED';
             $stmt = $pdo->prepare(
                 "UPDATE hotspot_commands
@@ -1240,14 +1337,13 @@ switch ($route) {
             $stmt->execute([$status, date('c'), $message, $message, $commandId]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$row) {
-                $check = $pdo->prepare('SELECT id, action, status, created_at, processing_at, processed_at, message, result FROM hotspot_commands WHERE id = ?');
-                $check->execute([$commandId]);
-                $existing = $check->fetch(PDO::FETCH_ASSOC);
-                if (!$existing) json_api_error('COMMAND_NOT_FOUND', 'Commande introuvable.', 404);
-                json_api_error('COMMAND_STATE_CONFLICT', 'La commande n’est pas en cours de traitement.', 409);
+                throw new RuntimeException('Impossible de finaliser la commande.');
             }
+            $pdo->commit();
+
             json_api_success(hotspot_command_public($row));
         } catch (Throwable $e) {
+            if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
             ara_log('hotspot-command-ack error command_id=' . $commandId . ': ' . $e->getMessage(), $config, 'error');
             json_api_error('COMMAND_ACK_FAILED', 'Impossible d’enregistrer l’ACK.', 500);
         }
@@ -1758,71 +1854,39 @@ switch ($route) {
         if (!is_array($users) || empty($users)) {
             json_error('Aucune donnée utilisateur.');
         }
-        // ---------------------------------------------------------------
-        // CORRECTIF (audit 507-users, sync-users était destructif) :
-        // L'ancienne version faisait DELETE FROM hotspot_users puis
-        // ré-insérait UNIQUEMENT le lot reçu. Comme le script RouterOS
-        // limite l'envoi à 200 users (`:count < 200`) alors que le
-        // routeur en contient 507+, chaque sync effaçait silencieusement
-        // les 300+ users non envoyés du miroir Supabase — d'où des
-        // écarts/incohérences visibles côté admin (compteurs, listes),
-        // sans rapport avec le nombre réel d'utilisateurs sur le routeur.
-        // Remplacé par un UPSERT idempotent, sans DELETE : un utilisateur
-        // envoyé plusieurs fois (mêmes ou différents lots/exécutions)
-        // met à jour la même ligne au lieu d'en recréer une, et un
-        // utilisateur non inclus dans un lot partiel n'est plus perdu.
-        // La suppression réelle d'un utilisateur passe désormais
-        // uniquement par le flux explicite hotspot-user-delete (§ command
-        // queue), jamais par un sync implicite — cf. règle "ne pas
-        // supprimer automatiquement les utilisateurs légitimes".
-        // ---------------------------------------------------------------
+
         try {
             $pdo = ara_db_supabase();
-            ensure_hotspot_commands_table($pdo);
-            $protectedStmt = $pdo->query(
-                "SELECT DISTINCT u.* FROM hotspot_users u
-                 JOIN hotspot_commands c ON c.username = u.username
-                 WHERE UPPER(c.status) IN ('PENDING','PROCESSING') AND c.action IN ('create','update','enable','disable')"
-            );
-            $protectedRows = $protectedStmt ? $protectedStmt->fetchAll(PDO::FETCH_ASSOC) : [];
-            // Insertion/update en batch : reflet du routeur + conservation des mutations admin pas encore ACK.
-            $pdo->beginTransaction();
-            $pdo->exec("DELETE FROM hotspot_users");
-            $stmt = $pdo->prepare(
-                "INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            );
-            foreach ($users as $u) {
-                $stmt->execute([
-                    $u['name'] ?? '',
-                    $u['password'] ?? '',
-                    $u['profile'] ?? '',
-                    $u['mac-address'] ?? '',
-                    $u['comment'] ?? '',
-                    ($u['disabled'] ?? 'false') === 'true' ? 'true' : 'false',
-                    (int)($u['bytes-in'] ?? 0),
-                    (int)($u['bytes-out'] ?? 0),
-                    $u['uptime'] ?? '',
-                    $u['server'] ?? '',
-                ]);
+            ensure_hotspot_users_table($pdo);
+
+            $processed = 0;
+            $skipped = 0;
+            foreach ($users as $rawUser) {
+                if (!is_array($rawUser)) {
+                    $skipped++;
+                    continue;
+                }
+                $user = normalize_hotspot_sync_user($rawUser);
+                if ($user['username'] === '') {
+                    $skipped++;
+                    continue;
+                }
+                if (upsert_hotspot_sync_user($pdo, $user)) {
+                    $processed++;
+                } else {
+                    $skipped++;
+                }
             }
-            $restore = $pdo->prepare(
-                "INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (username) DO NOTHING"
-            );
-            foreach ($protectedRows as $u) {
-                $restore->execute([
-                    $u['username'] ?? '', $u['password'] ?? '', $u['profile'] ?? '', $u['mac_address'] ?? '',
-                    $u['comment'] ?? '', $u['disabled'] ?? 'false', (int)($u['bytes_in'] ?? 0), (int)($u['bytes_out'] ?? 0),
-                    $u['uptime'] ?? '', $u['server'] ?? '',
-                ]);
-            }
-            $pdo->commit();
-            json_response(['success' => true, 'count' => count($users)]);
+
+            json_response([
+                'success' => true,
+                'received' => count($users),
+                'processed' => $processed,
+                'skipped' => $skipped,
+            ]);
         } catch (Throwable $e) {
-            if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
             ara_log('sync-users error: ' . $e->getMessage(), $config, 'error');
-            json_error('Erreur sync-users: ' . $e->getMessage(), 500);
+            json_error('Erreur sync-users.', 500);
         }
         break;
 
@@ -1835,38 +1899,48 @@ switch ($route) {
         }
         try {
             $pdo = ara_db_supabase();
-            // Création automatique de la table si elle n'existe pas
-            $pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_profiles (
-                profile_name TEXT PRIMARY KEY,
-                shared_users INTEGER NOT NULL DEFAULT 1,
-                rate_limit TEXT,
-                on_login TEXT,
-                address_pool TEXT
-            )");
             $stmt = $pdo->prepare(
-                "INSERT INTO hotspot_profiles (profile_name, shared_users, rate_limit, on_login, address_pool)
-                 VALUES (?, ?, ?, ?, ?)
+                "INSERT INTO hotspot_profiles
+                    (profile_name, shared_users, rate_limit, on_login, address_pool, last_sync)
+                 VALUES (?, ?, ?, ?, ?, ?)
                  ON CONFLICT (profile_name) DO UPDATE SET
-                     shared_users = excluded.shared_users,
-                     rate_limit = excluded.rate_limit,
-                     on_login = excluded.on_login,
-                     address_pool = excluded.address_pool"
+                    shared_users = EXCLUDED.shared_users,
+                    rate_limit = EXCLUDED.rate_limit,
+                    on_login = EXCLUDED.on_login,
+                    address_pool = EXCLUDED.address_pool,
+                    last_sync = EXCLUDED.last_sync"
             );
+            $processed = 0;
+            $skipped = 0;
             foreach ($profiles as $p) {
+                if (!is_array($p)) {
+                    $skipped++;
+                    continue;
+                }
+                $name = trim((string)($p['name'] ?? ''));
+                if ($name === '') {
+                    $skipped++;
+                    continue;
+                }
                 $stmt->execute([
-                    $p['name'] ?? '',
-                    (int)($p['shared-users'] ?? 1),
-                    $p['rate-limit'] ?? '',
-                    $p['on-login'] ?? '',
-                    $p['address-pool'] ?? '',
+                    $name,
+                    max(1, (int)($p['shared-users'] ?? 1)),
+                    (string)($p['rate-limit'] ?? ''),
+                    (string)($p['on-login'] ?? ''),
+                    (string)($p['address-pool'] ?? ''),
+                    date('c'),
                 ]);
+                $processed++;
             }
-            json_response(['success' => true, 'count' => count($profiles)]);
+            json_response([
+                'success' => true,
+                'received' => count($profiles),
+                'processed' => $processed,
+                'skipped' => $skipped,
+            ]);
         } catch (Throwable $e) {
             ara_log('sync-profiles error: ' . $e->getMessage(), $config, 'error');
-            $msg = 'Erreur sync-profiles.';
-            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
-            json_error($msg, 500);
+            json_error('Erreur sync-profiles.', 500);
         }
         break;
 
@@ -2210,9 +2284,11 @@ if ($period === 'today' || $period === 'yesterday') {
         $profile  = trim((string)($payload['profile'] ?? ''));
         $comment  = trim((string)($payload['comment'] ?? ''));
         $expiry   = trim((string)($payload['expiry'] ?? ''));
+        $limitUptime = trim((string)($payload['limit_uptime'] ?? $payload['limit-uptime'] ?? ''));
+        $limitBytes = $payload['limit_bytes_total'] ?? $payload['limit-bytes-total'] ?? null;
 
         if (!hotspot_username_valid($username)) {
-            json_api_error('INVALID_REQUEST', 'Nom d\'utilisateur manquant ou invalide.', 400);
+            json_api_error('INVALID_REQUEST', "Nom d'utilisateur manquant ou invalide.", 400);
         }
         if ($password === '') {
             json_api_error('INVALID_REQUEST', 'Mot de passe requis.', 400);
@@ -2221,12 +2297,14 @@ if ($period === 'today' || $period === 'yesterday') {
             json_api_error('INVALID_REQUEST', 'Profil requis.', 400);
         }
         if ($expiry !== '' && !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiry)) {
-            json_api_error('INVALID_REQUEST', 'Format d\'expiration invalide (attendu AAAA-MM-JJ HH:MM:SS).', 400);
+            json_api_error('INVALID_REQUEST', "Format d'expiration invalide (attendu AAAA-MM-JJ HH:MM:SS).", 400);
+        }
+        if ($limitBytes !== null && $limitBytes !== '' && (!is_numeric($limitBytes) || (int)$limitBytes < 0)) {
+            json_api_error('INVALID_REQUEST', 'limit_bytes_total invalide.', 400);
         }
 
         try {
             $pdo = ara_db_supabase();
-
             $profileCheck = hotspot_profile_exists($pdo, $profile, $config);
             if ($profileCheck === false) {
                 json_api_error('PROFILE_NOT_FOUND', 'Profil inconnu.', 404);
@@ -2238,46 +2316,33 @@ if ($period === 'today' || $period === 'yesterday') {
                 json_api_error('USER_EXISTS', 'Cet utilisateur existe déjà.', 409);
             }
 
-            $insert = $pdo->prepare(
-                'INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
-                 VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)'
-            );
-            $insert->execute([$username, $password, $profile, '', $comment, 'false', '', '']);
-
-            if ($expiry !== '') {
-                ensure_hotspot_expiry_table($pdo);
-                $stmt = $pdo->prepare(
-                    "INSERT INTO hotspot_expiry (user_id, expiry, updated_at)
-                     VALUES (?, ?, ?)
-                     ON CONFLICT (user_id) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at"
-                );
-                $stmt->execute([$username, $expiry, date('c')]);
-                try {
-                    $pdoLocal = ara_db($config);
-                    ensure_hotspot_expiry_table($pdoLocal);
-                    $stmtLocal = $pdoLocal->prepare(
-                        'INSERT INTO hotspot_expiry (user, expiry, updated_at)
-                         VALUES (:user, :expiry, :updated_at)
-                         ON CONFLICT(user) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at'
-                    );
-                    $stmtLocal->execute([':user' => $username, ':expiry' => $expiry, ':updated_at' => date('c')]);
-                } catch (Throwable $e) {}
+            $commandId = queue_hotspot_command($config, 'create', $username, [
+                'profile' => $profile,
+                'comment' => $comment,
+                'expiry' => $expiry !== '' ? $expiry : null,
+                'password' => $password,
+                'limit_uptime' => $limitUptime !== '' ? $limitUptime : null,
+                'limit_bytes_total' => ($limitBytes === null || $limitBytes === '') ? null : (int)$limitBytes,
+            ]);
+            if ($commandId === null) {
+                json_api_error('COMMAND_QUEUE_FAILED', 'Impossible de mettre la création en file.', 500);
             }
 
-            $commandId = queue_hotspot_command($config, 'create', $username, [
-                'profile' => $profile, 'comment' => $comment, 'expiry' => $expiry ?: null, 'password' => $password,
-            ]);
-
+            // The router remains the operational source of truth. The mirror
+            // is populated by the next MikroTik sync after the worker ACK.
             json_api_success([
-                'username' => $username, 'profile' => $profile, 'comment' => $comment,
-                'disabled' => false, 'expiry' => $expiry ?: null,
+                'username' => $username,
+                'profile' => $profile,
+                'comment' => $comment,
+                'disabled' => false,
+                'expiry' => $expiry !== '' ? $expiry : null,
+                'limit_uptime' => $limitUptime !== '' ? $limitUptime : null,
+                'limit_bytes_total' => ($limitBytes === null || $limitBytes === '') ? null : (int)$limitBytes,
                 'command' => ['id' => $commandId, 'status' => 'PENDING'],
             ], 201);
         } catch (Throwable $e) {
             ara_log('hotspot-user-create error: ' . $e->getMessage(), $config, 'error');
-            $msg = 'Impossible de créer l\'utilisateur.';
-            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
-            json_api_error('USER_CREATE_FAILED', $msg, 500);
+            json_api_error('USER_CREATE_FAILED', "Impossible de créer l'utilisateur.", 500);
         }
         break;
 
@@ -2287,7 +2352,7 @@ if ($period === 'today' || $period === 'yesterday') {
         $payload  = get_request_payload();
         $username = trim((string)($payload['username'] ?? ''));
         if (!hotspot_username_valid($username)) {
-            json_api_error('INVALID_REQUEST', 'Nom d\'utilisateur manquant ou invalide.', 400);
+            json_api_error('INVALID_REQUEST', "Nom d'utilisateur manquant ou invalide.", 400);
         }
 
         try {
@@ -2298,68 +2363,54 @@ if ($period === 'today' || $period === 'yesterday') {
                 json_api_error('USER_NOT_FOUND', 'Utilisateur introuvable.', 404);
             }
 
-            $fields = [];
-            $params = [];
-
-            if (isset($payload['profile']) && trim((string)$payload['profile']) !== '') {
+            if (isset($payload['profile'])) {
                 $profile = trim((string)$payload['profile']);
+                if ($profile === '') {
+                    json_api_error('INVALID_REQUEST', 'Profil invalide.', 400);
+                }
                 $profileCheck = hotspot_profile_exists($pdo, $profile, $config);
                 if ($profileCheck === false) {
                     json_api_error('PROFILE_NOT_FOUND', 'Profil inconnu.', 404);
                 }
-                $fields[] = 'profile = ?';
-                $params[] = $profile;
-            }
-            if (isset($payload['comment'])) {
-                $fields[] = 'comment = ?';
-                $params[] = trim((string)$payload['comment']);
-            }
-            if (isset($payload['mac_address'])) {
-                $fields[] = 'mac_address = ?';
-                $params[] = trim((string)$payload['mac_address']);
-            }
-            if (isset($payload['password']) && (string)$payload['password'] !== '') {
-                $fields[] = 'password = ?';
-                $params[] = (string)$payload['password'];
             }
 
-            if (!empty($fields)) {
-                $params[] = $username;
-                $sql = 'UPDATE hotspot_users SET ' . implode(', ', $fields) . ' WHERE username = ?';
-                $pdo->prepare($sql)->execute($params);
+            $expiry = array_key_exists('expiry', $payload) ? trim((string)$payload['expiry']) : null;
+            if ($expiry !== null && $expiry !== '' &&
+                !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiry)) {
+                json_api_error('INVALID_REQUEST', "Format d'expiration invalide (attendu AAAA-MM-JJ HH:MM:SS).", 400);
             }
 
-            $expiry = isset($payload['expiry']) ? trim((string)$payload['expiry']) : null;
-            if ($expiry !== null && $expiry !== '') {
-                if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiry)) {
-                    json_api_error('INVALID_REQUEST', 'Format d\'expiration invalide (attendu AAAA-MM-JJ HH:MM:SS).', 400);
+            $hasLimitBytes = array_key_exists('limit_bytes_total', $payload) || array_key_exists('limit-bytes-total', $payload);
+            if ($hasLimitBytes) {
+                $limitBytes = $payload['limit_bytes_total'] ?? $payload['limit-bytes-total'];
+                if ($limitBytes !== null && $limitBytes !== '' && (!is_numeric($limitBytes) || (int)$limitBytes < 0)) {
+                    json_api_error('INVALID_REQUEST', 'limit_bytes_total invalide.', 400);
                 }
-                ensure_hotspot_expiry_table($pdo);
-                $stmt = $pdo->prepare(
-                    "INSERT INTO hotspot_expiry (user_id, expiry, updated_at)
-                     VALUES (?, ?, ?)
-                     ON CONFLICT (user_id) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at"
-                );
-                $stmt->execute([$username, $expiry, date('c')]);
             }
 
-            $commandId = queue_hotspot_command($config, 'update', $username, $payload);
+            $commandPayload = $payload;
+            $commandPayload['username'] = $username;
+            if (array_key_exists('limit-uptime', $commandPayload) && !array_key_exists('limit_uptime', $commandPayload)) {
+                $commandPayload['limit_uptime'] = $commandPayload['limit-uptime'];
+            }
+            if (array_key_exists('limit-bytes-total', $commandPayload) && !array_key_exists('limit_bytes_total', $commandPayload)) {
+                $commandPayload['limit_bytes_total'] = $commandPayload['limit-bytes-total'];
+            }
 
-            $stmt = $pdo->prepare(
-                'SELECT u.*, e.expiry FROM hotspot_users u
-                 LEFT JOIN hotspot_expiry e ON u.username = e.user_id
-                 WHERE u.username = ?'
-            );
-            $stmt->execute([$username]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            $public = hotspot_user_public_row($row ?: ['username' => $username]);
-            $public['command'] = ['id' => $commandId, 'status' => 'PENDING'];
-            json_api_success($public);
+            $commandId = queue_hotspot_command($config, 'update', $username, $commandPayload);
+            if ($commandId === null) {
+                json_api_error('COMMAND_QUEUE_FAILED', 'Impossible de mettre la modification en file.', 500);
+            }
+
+            // No optimistic mirror update: the worker ACK + next router sync
+            // confirm the actual operational state.
+            json_api_success([
+                'username' => $username,
+                'command' => ['id' => $commandId, 'status' => 'PENDING'],
+            ]);
         } catch (Throwable $e) {
             ara_log('hotspot-user-update error: ' . $e->getMessage(), $config, 'error');
-            $msg = 'Impossible de modifier l\'utilisateur.';
-            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
-            json_api_error('USER_UPDATE_FAILED', $msg, 500);
+            json_api_error('USER_UPDATE_FAILED', "Impossible de modifier l'utilisateur.", 500);
         }
         break;
 
@@ -2367,32 +2418,35 @@ if ($period === 'today' || $period === 'yesterday') {
     case 'hotspot-user-disable':
         require_admin_token($config);
         require_post_method();
-        $targetDisabled = ($route === 'hotspot-user-disable') ? 'true' : 'false';
-        $failCode = ($route === 'hotspot-user-disable') ? 'USER_DISABLE_FAILED' : 'USER_ENABLE_FAILED';
+        $isDisable = ($route === 'hotspot-user-disable');
         $payload  = get_request_payload();
         $username = trim((string)($payload['username'] ?? ''));
         if (!hotspot_username_valid($username)) {
-            json_api_error('INVALID_REQUEST', 'Nom d\'utilisateur manquant ou invalide.', 400);
+            json_api_error('INVALID_REQUEST', "Nom d'utilisateur manquant ou invalide.", 400);
         }
         try {
             $pdo = ara_db_supabase();
-            $existsStmt = $pdo->prepare('SELECT disabled FROM hotspot_users WHERE username = ?');
+            $existsStmt = $pdo->prepare('SELECT 1 FROM hotspot_users WHERE username = ?');
             $existsStmt->execute([$username]);
-            $current = $existsStmt->fetch(PDO::FETCH_ASSOC);
-            if (!$current) {
+            if (!$existsStmt->fetchColumn()) {
                 json_api_error('USER_NOT_FOUND', 'Utilisateur introuvable.', 404);
             }
-            $pdo->prepare('UPDATE hotspot_users SET disabled = ? WHERE username = ?')
-                ->execute([$targetDisabled, $username]);
 
-            $commandId = queue_hotspot_command($config, $route === 'hotspot-user-disable' ? 'disable' : 'enable', $username);
+            $action = $isDisable ? 'disable' : 'enable';
+            $commandId = queue_hotspot_command($config, $action, $username);
+            if ($commandId === null) {
+                json_api_error('COMMAND_QUEUE_FAILED', 'Impossible de mettre la commande en file.', 500);
+            }
 
-            json_api_success(['username' => $username, 'disabled' => $targetDisabled === 'true', 'command' => ['id' => $commandId, 'status' => 'PENDING']]);
+            json_api_success([
+                'username' => $username,
+                'disabled' => $isDisable,
+                'command' => ['id' => $commandId, 'status' => 'PENDING'],
+            ]);
         } catch (Throwable $e) {
             ara_log($route . ' error: ' . $e->getMessage(), $config, 'error');
-            $msg = 'Impossible de modifier le statut de l\'utilisateur.';
-            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
-            json_api_error($failCode, $msg, 500);
+            json_api_error($isDisable ? 'USER_DISABLE_FAILED' : 'USER_ENABLE_FAILED',
+                "Impossible de modifier le statut de l'utilisateur.", 500);
         }
         break;
 
@@ -2402,32 +2456,35 @@ if ($period === 'today' || $period === 'yesterday') {
         $payload  = get_request_payload();
         $username = trim((string)($payload['username'] ?? ''));
         if (!hotspot_username_valid($username)) {
-            json_api_error('INVALID_REQUEST', 'Nom d\'utilisateur manquant ou invalide.', 400);
+            json_api_error('INVALID_REQUEST', "Nom d'utilisateur manquant ou invalide.", 400);
         }
         try {
             $pdo = ara_db_supabase();
             $existsStmt = $pdo->prepare('SELECT 1 FROM hotspot_users WHERE username = ?');
             $existsStmt->execute([$username]);
             if (!$existsStmt->fetchColumn()) {
-                json_api_error('USER_NOT_FOUND', 'Utilisateur introuvable.', 404);
+                // Delete is idempotent: if the operational target is already
+                // absent, enqueueing a delete is unnecessary.
+                json_api_success([
+                    'username' => $username,
+                    'deleted' => true,
+                    'command' => null,
+                ]);
             }
-            $pdo->prepare('DELETE FROM hotspot_users WHERE username = ?')->execute([$username]);
-            try {
-                $pdo->prepare('DELETE FROM hotspot_expiry WHERE user_id = ?')->execute([$username]);
-            } catch (Throwable $e) {}
-            try {
-                $pdoLocal = ara_db($config);
-                $pdoLocal->prepare('DELETE FROM hotspot_expiry WHERE user = ?')->execute([$username]);
-            } catch (Throwable $e) {}
 
             $commandId = queue_hotspot_command($config, 'delete', $username);
+            if ($commandId === null) {
+                json_api_error('COMMAND_QUEUE_FAILED', 'Impossible de mettre la suppression en file.', 500);
+            }
 
-            json_api_success(['username' => $username, 'deleted' => true, 'command' => ['id' => $commandId, 'status' => 'PENDING']]);
+            json_api_success([
+                'username' => $username,
+                'deleted' => false,
+                'command' => ['id' => $commandId, 'status' => 'PENDING'],
+            ]);
         } catch (Throwable $e) {
             ara_log('hotspot-user-delete error: ' . $e->getMessage(), $config, 'error');
-            $msg = 'Impossible de supprimer l\'utilisateur.';
-            if (!empty($config['debug'])) $msg .= ' [debug] ' . $e->getMessage();
-            json_api_error('USER_DELETE_FAILED', $msg, 500);
+            json_api_error('USER_DELETE_FAILED', "Impossible de supprimer l'utilisateur.", 500);
         }
         break;
 

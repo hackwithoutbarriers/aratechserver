@@ -47,7 +47,27 @@
                 :if ([:typeof $profile] = "nothing" || [:len $profile] = 0) do={ :set profile "default" }
                 :local comment ($payload->"comment")
                 :if ([:typeof $comment] = "nothing") do={ :set comment "" }
-                /ip hotspot user add name=$username password=$password profile=$profile comment=$comment disabled=no
+
+                :local limitUptime ($payload->"limit_uptime")
+                :local limitBytes ($payload->"limit_bytes_total")
+                :local hasUptime false
+                :local hasBytes false
+                :if ([:typeof $limitUptime] != "nothing" && [:len [:tostr $limitUptime]] > 0) do={ :set hasUptime true }
+                :if ([:typeof $limitBytes] != "nothing" && [:len [:tostr $limitBytes]] > 0) do={ :set hasBytes true }
+
+                :if ($hasUptime && $hasBytes) do={
+                    /ip hotspot user add name=$username password=$password profile=$profile comment=$comment disabled=no limit-uptime=$limitUptime limit-bytes-total=$limitBytes
+                } else={
+                    :if ($hasUptime) do={
+                        /ip hotspot user add name=$username password=$password profile=$profile comment=$comment disabled=no limit-uptime=$limitUptime
+                    } else={
+                        :if ($hasBytes) do={
+                            /ip hotspot user add name=$username password=$password profile=$profile comment=$comment disabled=no limit-bytes-total=$limitBytes
+                        } else={
+                            /ip hotspot user add name=$username password=$password profile=$profile comment=$comment disabled=no
+                        }
+                    }
+                }
                 :set ok true; :set msg "created"
             }
         }
@@ -61,6 +81,19 @@
             :if ([:typeof $profile] != "nothing" && [:len $profile] > 0) do={ /ip hotspot user set $id profile=$profile }
             :if ([:typeof $password] != "nothing" && [:len $password] > 0) do={ /ip hotspot user set $id password=$password }
             :if ([:typeof $comment] != "nothing") do={ /ip hotspot user set $id comment=$comment }
+
+            :local limitUptime ($payload->"limit_uptime")
+            :if ([:typeof $limitUptime] != "nothing") do={
+                :if ([:tostr $limitUptime] = "") do={
+                    /ip hotspot user set $id limit-uptime=""
+                } else={
+                    /ip hotspot user set $id limit-uptime=$limitUptime
+                }
+            }
+            :local limitBytes ($payload->"limit_bytes_total")
+            :if ([:typeof $limitBytes] != "nothing") do={
+                /ip hotspot user set $id limit-bytes-total=$limitBytes
+            }
             :set ok true; :set msg "updated"
         }
 
