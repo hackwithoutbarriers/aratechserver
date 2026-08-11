@@ -30,7 +30,7 @@
 # =============================================================================
 
 :local apiUrl "https://aratech-ldg0.onrender.com/api.php?route=push-status"
-:local apiKey "lQgFtB6JyUdb72wMorus7bOdLftDwYB0uh7QzsH2BGoe8UT4joCJcYJO380EYXUcQBQZms6bC0HyJUePbWo7SEbXi1vV7fUd64yo"
+:local apiKey "REPLACE_WITH_ROTATED_HOTSPOT_SYNC_KEY"
 
 :do {
 

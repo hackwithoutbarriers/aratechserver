@@ -7,15 +7,30 @@
 declare(strict_types=1);
 
 require __DIR__ . '/db.php';
-require __DIR__ . '/lib/RouterosAPI.php';
 $config = require __DIR__ . '/config.php';
 
 header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-API-Key');
+header('Cache-Control: no-store');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: no-referrer');
+if (function_exists('header_remove')) {
+    header_remove('X-Powered-By');
+}
+
+$allowedOrigin = trim((string)($config['allowed_origin'] ?? ''));
+$requestOrigin = trim((string)($_SERVER['HTTP_ORIGIN'] ?? ''));
+if ($allowedOrigin !== '' && $requestOrigin !== '' && hash_equals($allowedOrigin, $requestOrigin)) {
+    header('Access-Control-Allow-Origin: ' . $allowedOrigin);
+    header('Vary: Origin');
+    header('Access-Control-Allow-Credentials: true');
+}
+header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, X-API-Key, X-Admin-Token, Authorization, X-CSRF-Token');
 
 $route = trim((string)($_GET['route'] ?? ''));
+if ($route !== '' && strlen($route) > 80) {
+    json_error('Route invalide.', 400);
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
@@ -25,33 +40,102 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 function json_response($data, int $status = 200): void
 {
     http_response_code($status);
-    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    try {
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        $json = '{"success":false,"error":{"code":"INTERNAL_ERROR","message":"Une erreur interne est survenue."}}';
+    }
+    echo $json;
     exit;
 }
 
-function json_error(string $message, int $status = 400): void
+function json_error(string $message, int $status = 400, string $code = 'API_ERROR'): void
 {
-    json_response(['success' => false, 'message' => $message], $status);
+    // Keep the legacy `message` key for existing consumers while exposing the
+    // normalized Phase 5 error contract.
+    json_response([
+        'success' => false,
+        'error' => ['code' => $code, 'message' => $message],
+        'message' => $message,
+    ], $status);
 }
 
 function get_request_payload(): array
 {
+    $contentType = strtolower(trim((string)($_SERVER['CONTENT_TYPE'] ?? '')));
     $body = file_get_contents('php://input');
-    if ($body !== '') {
-        $data = json_decode($body, true);
-        if (is_array($data)) {
+    if ($body !== false && trim($body) !== '') {
+        $isJson = str_contains($contentType, 'application/json') || str_starts_with(ltrim($body), '{') || str_starts_with(ltrim($body), '[');
+        if ($isJson) {
+            try {
+                $data = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+            } catch (JsonException $e) {
+                json_error('JSON invalide.', 400, 'INVALID_JSON');
+            }
+            if (!is_array($data)) {
+                json_error('Le corps JSON doit être un objet ou un tableau.', 400, 'INVALID_JSON');
+            }
             return $data;
         }
     }
-    return $_POST;
+    return is_array($_POST) ? $_POST : [];
+}
+
+function request_bearer_token(): string
+{
+    $authorization = trim((string)($_SERVER['HTTP_AUTHORIZATION'] ?? ''));
+    if (preg_match('/^Bearer\s+(.+)$/i', $authorization, $m)) {
+        return trim($m[1]);
+    }
+    return '';
 }
 
 function require_admin_token(array $config): void
 {
-    $token = trim((string)($_GET['token'] ?? $_POST['token'] ?? ''));
-    if ($token === '' || !isset($config['admin']['token']) || !hash_equals($config['admin']['token'], $token)) {
-        json_error('Administrateur non autorisé.', 401);
+    $expected = trim((string)($config['admin']['token'] ?? ''));
+    $token = trim((string)($_SERVER['HTTP_X_ADMIN_TOKEN'] ?? ''));
+    if ($token === '') {
+        $token = request_bearer_token();
     }
+    // Legacy query/body token remains accepted for compatibility with the
+    // existing frontend, but new clients should use X-Admin-Token/Bearer.
+    if ($token === '') {
+        $token = trim((string)($_GET['token'] ?? $_POST['token'] ?? ''));
+    }
+    if ($expected === '' || $token === '' || !hash_equals($expected, $token)) {
+        json_api_error('UNAUTHORIZED', 'Administrateur non autorisé.', 401);
+    }
+}
+
+function validate_iso_date(string $value): bool
+{
+    $dt = DateTimeImmutable::createFromFormat('Y-m-d', $value);
+    return $dt !== false && $dt->format('Y-m-d') === $value;
+}
+
+function validate_date_range(string $start, string $end): void
+{
+    if (!validate_iso_date($start) || !validate_iso_date($end) || $start > $end) {
+        json_api_error('INVALID_REQUEST', 'Période de dates invalide.', 422);
+    }
+}
+
+function validate_hotspot_time_limit(?string $value): bool
+{
+    if ($value === null || trim($value) === '') return true;
+    return preg_match('/^(?:(?:\d+(?:\.\d+)?)(?:w|d|h|m|s))(?:\s+(?:\d+(?:\.\d+)?)(?:w|d|h|m|s))*$/i', trim($value)) === 1;
+}
+
+function validate_hotspot_data_limit($value): bool
+{
+    if ($value === null || $value === '') return true;
+    if (is_int($value)) return $value >= 0;
+    if (is_string($value) && preg_match('/^\d+$/', trim($value)) === 1) {
+        return strlen(ltrim($value, '0')) <= strlen((string)PHP_INT_MAX)
+            && (strlen(ltrim($value, '0')) < strlen((string)PHP_INT_MAX) || ltrim($value, '0') <= (string)PHP_INT_MAX);
+    }
+    return is_float($value) && $value >= 0 && floor($value) === $value && $value <= PHP_INT_MAX;
 }
 
 function upsert_ad(PDO $pdo, array $item): void
@@ -208,66 +292,6 @@ function record_track_event(PDO $pdo, string $itemId, string $eventType, ?string
     }
 }
 
-function get_user_expiry_from_router(array $config, string $username): string
-{
-    $api = new RouterosAPI();
-    $api->timeout = $config['mikrotik']['connect_timeout'] ?? 10;
-    $api->attempts = $config['mikrotik']['connect_retries'] ?? 3;
-    $port = $config['mikrotik']['api_port'] ?? 8728;
-
-    $connected = $api->connect(
-        $config['mikrotik']['host'],
-        $config['mikrotik']['api_user'],
-        $config['mikrotik']['api_password'],
-        $port
-    );
-
-    if (!$connected) {
-        return '';
-    }
-
-    $result = $api->comm('/ip/hotspot/user/print', [
-        '?name' => $username
-    ]);
-    $api->disconnect();
-
-    if (isset($result[0]) && isset($result[0]['comment'])) {
-        $comment = trim($result[0]['comment']);
-
-        if (preg_match('/^([a-z]{3}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2})$/i', $comment, $matches)) {
-            $dt = DateTime::createFromFormat('M/d/Y H:i:s', $matches[1]);
-            if ($dt !== false) {
-                return $dt->format('Y-m-d H:i:s');
-            }
-        }
-
-        if (preg_match('/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/', $comment, $matches)) {
-            return $matches[1];
-        }
-
-        if (preg_match('/expires-in:(\d+)([hdwmy])/', $comment, $matches)) {
-            $value = (int)$matches[1];
-            $unit = $matches[2];
-            $now = time();
-            switch ($unit) {
-                case 'h': $seconds = $value * 3600; break;
-                case 'd': $seconds = $value * 86400; break;
-                case 'w': $seconds = $value * 604800; break;
-                case 'm': $seconds = $value * 2592000; break;
-                case 'y': $seconds = $value * 31536000; break;
-                default: $seconds = $value * 86400;
-            }
-            return date('Y-m-d H:i:s', $now + $seconds);
-        }
-
-        if ($comment !== '') {
-            return $comment;
-        }
-    }
-
-    return '';
-}
-
 function ensure_hotspot_expiry_table(PDO $pdo): void
 {
     $pdo->exec('CREATE TABLE IF NOT EXISTS hotspot_expiry (
@@ -366,11 +390,38 @@ function queue_hotspot_command(array $config, string $action, string $username, 
         if ($validation !== null) {
             throw new InvalidArgumentException($validation);
         }
+
+        // Idempotence: reuse an identical pending/processing command instead
+        // of enqueueing the same operation twice. Completed commands are also
+        // reused when their payload is identical, which protects repeated
+        // browser submissions and CSV/API retries.
+        $existingStmt = $pdo->prepare(
+            "SELECT id, payload FROM hotspot_commands
+             WHERE username = ? AND action = ?
+               AND UPPER(status) IN ('PENDING','PROCESSING','EXECUTED')
+             ORDER BY id DESC LIMIT 20"
+        );
+        $existingStmt->execute([$username, $action]);
+        $canonical = static function (array $value): string {
+            ksort($value);
+            return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
+        };
+        $wanted = $canonical($payload);
+        foreach ($existingStmt->fetchAll(PDO::FETCH_ASSOC) as $existing) {
+            $stored = json_decode((string)($existing['payload'] ?? '{}'), true);
+            if (is_array($stored)) {
+                $stored['username'] = $username;
+                if ($canonical($stored) === $wanted) {
+                    return (int)$existing['id'];
+                }
+            }
+        }
+
         $stmt = $pdo->prepare(
             'INSERT INTO hotspot_commands (action, username, payload, status, created_at)
              VALUES (?, ?, ?, \'PENDING\', ?) RETURNING id'
         );
-        $stmt->execute([$action, $username, json_encode($payload, JSON_UNESCAPED_UNICODE), date('c')]);
+        $stmt->execute([$action, $username, json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE), date('c')]);
         $id = $stmt->fetchColumn();
         return $id !== false ? (int)$id : null;
     } catch (Throwable $e) {
@@ -720,9 +771,12 @@ function upsert_hotspot_sync_user(PDO $pdo, array $u): bool
 
 function require_sync_key(array $config): void
 {
-    $key = $_SERVER['HTTP_X_API_KEY'] ?? '';
-    $expected = $config['hotspot']['sync_key'] ?? '';
-    if ($expected === '' || !hash_equals($expected, $key)) {
+    $key = trim((string)($_SERVER['HTTP_X_API_KEY'] ?? ''));
+    if ($key === '') {
+        $key = request_bearer_token();
+    }
+    $expected = trim((string)($config['hotspot']['sync_key'] ?? ''));
+    if ($expected === '' || $key === '' || !hash_equals($expected, $key)) {
         json_api_error('UNAUTHORIZED', 'Non autorisé.', 401);
     }
 }
@@ -887,34 +941,45 @@ function normalize_hotspot_users($usersRaw): array
  */
 function ensure_hotspot_snapshot_columns(PDO $pdo, bool $isPostgres): void
 {
-    $columns = [
-        'router_identity' => $isPostgres ? 'TEXT'             : 'TEXT',
-        'router_uptime'   => $isPostgres ? 'TEXT'             : 'TEXT',
-        'router_version'  => $isPostgres ? 'TEXT'             : 'TEXT',
-        'cpu_load'        => $isPostgres ? 'DOUBLE PRECISION' : 'REAL',
-        'memory_total'    => $isPostgres ? 'BIGINT'           : 'INTEGER',
-        'memory_free'     => $isPostgres ? 'BIGINT'           : 'INTEGER',
-        'users_json'      => $isPostgres ? 'JSONB'            : 'TEXT',
-        'network_json'    => $isPostgres ? 'JSONB'            : 'TEXT',
-    ];
-
     if ($isPostgres) {
-        $stmt = $pdo->prepare(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = 'hotspot_snapshots'"
+        // Phase 2 owns the Supabase schema. The API must never ALTER it at
+        // runtime. Missing columns are a deployment/migration error.
+        $required = [
+            'router_identity', 'router_uptime', 'router_version', 'cpu_load',
+            'memory_total', 'memory_free', 'users_json', 'network_json',
+        ];
+        $stmt = $pdo->query(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'hotspot_snapshots'"
         );
-        $stmt->execute();
         $existing = $stmt->fetchAll(PDO::FETCH_COLUMN);
-    } else {
-        $stmt = $pdo->query('PRAGMA table_info(hotspot_snapshots)');
-        $existing = array_map(static fn($r) => $r['name'], $stmt->fetchAll(PDO::FETCH_ASSOC));
+        $missing = array_values(array_diff($required, $existing));
+        if ($missing) {
+            throw new RuntimeException('Schéma Supabase incomplet: hotspot_snapshots manque des colonnes requises.');
+        }
+        return;
     }
 
+    // Local SQLite is only a legacy/cache compatibility layer. Keep its
+    // lightweight column upgrade path without touching Supabase.
+    $columns = [
+        'router_identity' => 'TEXT',
+        'router_uptime'   => 'TEXT',
+        'router_version'  => 'TEXT',
+        'cpu_load'        => 'REAL',
+        'memory_total'    => 'INTEGER',
+        'memory_free'     => 'INTEGER',
+        'users_json'      => 'TEXT',
+        'network_json'    => 'TEXT',
+    ];
+    $stmt = $pdo->query('PRAGMA table_info(hotspot_snapshots)');
+    $existing = array_map(static fn($r) => $r['name'], $stmt->fetchAll(PDO::FETCH_ASSOC));
     foreach ($columns as $col => $type) {
         if (!in_array($col, $existing, true)) {
             $pdo->exec("ALTER TABLE hotspot_snapshots ADD COLUMN $col $type");
         }
     }
 }
+
 
 /**
  * Calcule le statut ONLINE / OFFLINE / UNKNOWN du routeur (voir §11).
@@ -1042,57 +1107,15 @@ function get_period_dates(string $period, string $customStart = '', string $cust
 
 function get_cached_network_status(array $config): array
 {
-    static $status = null;
-    if ($status !== null) {
-        return $status;
-    }
-
-    $status = [
-        'internet'    => 'UNKNOWN',
-        'mikrotik'    => 'OFFLINE',
-        'poe_switch'  => 'UNKNOWN',
-        'ap_01'       => 'UNKNOWN',
-        'ap_02'       => 'UNKNOWN',
+    // The API no longer opens a direct RouterOS connection. Network state is
+    // supplied by the RouterOS push/snapshot pipeline.
+    return [
+        'internet' => 'UNKNOWN',
+        'mikrotik' => 'UNKNOWN',
+        'poe_switch' => 'UNKNOWN',
+        'ap_01' => 'UNKNOWN',
+        'ap_02' => 'UNKNOWN',
     ];
-
-    $api = new RouterosAPI();
-    $api->timeout   = $config['mikrotik']['connect_timeout'] ?? 10;
-    $api->attempts  = $config['mikrotik']['connect_retries'] ?? 3;
-    $port           = $config['mikrotik']['api_port'] ?? 8728;
-    $connected = $api->connect(
-        $config['mikrotik']['host'],
-        $config['mikrotik']['api_user'],
-        $config['mikrotik']['api_password'],
-        $port
-    );
-
-    if ($connected) {
-        $status['mikrotik'] = 'ONLINE';
-        $status['internet'] = 'ONLINE'; // simplification
-
-        $interfaces = $api->comm('/interface/print');
-        $api->disconnect();
-
-        foreach ($interfaces as $iface) {
-            $name    = $iface['name'] ?? '';
-            $running = ($iface['running'] ?? 'false') === 'true';
-            if (stripos($name, 'poe') !== false && stripos($name, 'ether') !== false) {
-                $status['poe_switch'] = $running ? 'ONLINE' : 'OFFLINE';
-            } elseif (stripos($name, 'wlan') !== false) {
-                if (stripos($name, '1') !== false) {
-                    $status['ap_01'] = $running ? 'ONLINE' : 'OFFLINE';
-                } elseif (stripos($name, '2') !== false) {
-                    $status['ap_02'] = $running ? 'ONLINE' : 'OFFLINE';
-                }
-            }
-        }
-    } else {
-        // Journaliser l'erreur pour diagnostic
-        $errorMsg = error_get_last()['message'] ?? 'Connexion échouée';
-        ara_log('MikroTik connection failed: ' . $errorMsg, $config, 'error');
-    }
-
-    return $status;
 }
 
 function gather_alerts(array $config, array $networkStatus): array
@@ -1170,6 +1193,7 @@ switch ($route) {
         break;
 
     case 'track':
+        require_post_method();
         $payload = get_request_payload();
         $id = trim((string)($payload['id'] ?? ''));
         $type = trim((string)($payload['type'] ?? ''));
@@ -1210,6 +1234,7 @@ switch ($route) {
 
     case 'admin_save_ad':
         require_admin_token($config);
+        require_post_method();
         $payload = get_request_payload();
         if (!is_array($payload)) {
             json_error('Payload invalide.');
@@ -1229,6 +1254,7 @@ switch ($route) {
 
     case 'admin_delete_ad':
         require_admin_token($config);
+        require_post_method();
         $payload = get_request_payload();
         $id = trim((string)($payload['id'] ?? ''));
         if ($id === '') {
@@ -1246,6 +1272,7 @@ switch ($route) {
 
     case 'admin_reseed_ads':
         require_admin_token($config);
+        require_post_method();
         try {
             $pdo = ara_db($config);
             $pdo->exec('DELETE FROM ads');
@@ -1369,6 +1396,7 @@ switch ($route) {
         break;
 
     case 'set-expiry':
+        require_post_method();
         require_sync_key($config);
         $payload = get_request_payload();
         $user   = trim((string)($payload['user']   ?? ''));
@@ -1449,33 +1477,9 @@ switch ($route) {
                 }
             } catch (Throwable $e) {}
 
-            // 3) Routeur en direct (inchangé)
-            $expiry = get_user_expiry_from_router($config, $user);
-            if ($expiry !== '') {
-                // Mettre à jour locale + Supabase
-                try {
-                    $pdo = ara_db($config);
-                    ensure_hotspot_expiry_table($pdo);
-                    $stmt = $pdo->prepare(
-                        'INSERT INTO hotspot_expiry (user, expiry, updated_at)
-                         VALUES (:user, :expiry, :updated_at)
-                         ON CONFLICT(user) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at'
-                    );
-                    $stmt->execute([':user' => $user, ':expiry' => $expiry, ':updated_at' => date('c')]);
-
-                    $pdoSup = ara_db_supabase();
-                    $stmt2 = $pdoSup->prepare(
-                        "INSERT INTO hotspot_expiry (user_id, expiry, updated_at)
-                         VALUES (?, ?, ?)
-                         ON CONFLICT (user_id) DO UPDATE SET expiry = excluded.expiry, updated_at = excluded.updated_at"
-                    );
-                    $stmt2->execute([$user, $expiry, date('c')]);
-                } catch (Throwable $e) {}
-
-                json_response(['success' => true, 'expiry' => $expiry]);
-            }
-
-            // 4) Rien trouvé
+            // MikroTik is not contacted from the web API. Expiry is read
+            // from the Supabase mirror populated by the RouterOS sync.
+            // 3) Rien trouvé
             json_error('Expiration non disponible.', 404);
 
         } catch (Throwable $e) {
@@ -1487,6 +1491,7 @@ switch ($route) {
         break;
 
     case 'push-logs':
+        require_post_method();
         require_sync_key($config);
         $date = normalize_router_date($_GET['date'] ?? '');
         $body = file_get_contents('php://input');
@@ -1554,8 +1559,9 @@ switch ($route) {
 
     case '':
         require_admin_token($config);
-        $startDate = $_GET['start'] ?? date('Y-m-01');
-        $endDate   = $_GET['end']   ?? date('Y-m-d');
+        $startDate = (string)($_GET['start'] ?? date('Y-m-01'));
+        $endDate   = (string)($_GET['end']   ?? date('Y-m-d'));
+        validate_date_range($startDate, $endDate);
 
         try {
             $pdo = ara_db_supabase();
@@ -1595,6 +1601,7 @@ switch ($route) {
         break;
 
     case 'log-sale':
+        require_post_method();
         require_sync_key($config);
         $payload = get_request_payload();
         $date    = $payload['date']    ?? '';
@@ -1622,8 +1629,9 @@ switch ($route) {
 
     case 'get-sales':
         require_admin_token($config);
-        $startDate = $_GET['start'] ?? date('Y-m-01');
-        $endDate   = $_GET['end']   ?? date('Y-m-d');
+        $startDate = (string)($_GET['start'] ?? date('Y-m-01'));
+        $endDate   = (string)($_GET['end']   ?? date('Y-m-d'));
+        validate_date_range($startDate, $endDate);
 
         try {
             $pdo = ara_db_supabase();
@@ -1681,6 +1689,7 @@ switch ($route) {
         break;
 
     case 'push-status':
+        require_post_method();
         require_sync_key($config);
         $payload = get_push_status_payload();
 
@@ -1848,6 +1857,7 @@ switch ($route) {
         break;
 
     case 'sync-users':
+        require_post_method();
         require_sync_key($config);
         $payload = get_request_payload();
         $users = $payload['users'] ?? [];
@@ -1891,6 +1901,7 @@ switch ($route) {
         break;
 
         case 'sync-profiles':
+        require_post_method();
         require_sync_key($config);
         $payload = get_request_payload();
         $profiles = $payload['profiles'] ?? [];
@@ -2296,6 +2307,12 @@ if ($period === 'today' || $period === 'yesterday') {
         if ($profile === '') {
             json_api_error('INVALID_REQUEST', 'Profil requis.', 400);
         }
+        if (!validate_hotspot_time_limit($limitUptime)) {
+            json_api_error('INVALID_REQUEST', 'limit_uptime invalide.', 422);
+        }
+        if (!validate_hotspot_data_limit($limitBytes)) {
+            json_api_error('INVALID_REQUEST', 'limit_bytes_total invalide.', 422);
+        }
         if ($expiry !== '' && !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiry)) {
             json_api_error('INVALID_REQUEST', "Format d'expiration invalide (attendu AAAA-MM-JJ HH:MM:SS).", 400);
         }
@@ -2380,6 +2397,14 @@ if ($period === 'today' || $period === 'yesterday') {
                 json_api_error('INVALID_REQUEST', "Format d'expiration invalide (attendu AAAA-MM-JJ HH:MM:SS).", 400);
             }
 
+            $hasLimitUptime = array_key_exists('limit_uptime', $payload) || array_key_exists('limit-uptime', $payload);
+            if ($hasLimitUptime) {
+                $limitUptimeValue = $payload['limit_uptime'] ?? $payload['limit-uptime'];
+                if (!validate_hotspot_time_limit($limitUptimeValue === null ? null : (string)$limitUptimeValue)) {
+                    json_api_error('INVALID_REQUEST', 'limit_uptime invalide.', 422);
+                }
+            }
+
             $hasLimitBytes = array_key_exists('limit_bytes_total', $payload) || array_key_exists('limit-bytes-total', $payload);
             if ($hasLimitBytes) {
                 $limitBytes = $payload['limit_bytes_total'] ?? $payload['limit-bytes-total'];
@@ -2388,14 +2413,20 @@ if ($period === 'today' || $period === 'yesterday') {
                 }
             }
 
-            $commandPayload = $payload;
-            $commandPayload['username'] = $username;
-            if (array_key_exists('limit-uptime', $commandPayload) && !array_key_exists('limit_uptime', $commandPayload)) {
-                $commandPayload['limit_uptime'] = $commandPayload['limit-uptime'];
+            // Explicit whitelist: never forward arbitrary request fields to
+            // hotspot_commands. The worker only receives fields it knows.
+            $commandPayload = [];
+            foreach (['password', 'profile', 'comment', 'mac_address', 'expiry'] as $field) {
+                if (array_key_exists($field, $payload)) {
+                    $commandPayload[$field] = $payload[$field];
+                }
             }
-            if (array_key_exists('limit-bytes-total', $commandPayload) && !array_key_exists('limit_bytes_total', $commandPayload)) {
-                $commandPayload['limit_bytes_total'] = $commandPayload['limit-bytes-total'];
-            }
+            $commandPayload['limit_uptime'] = array_key_exists('limit_uptime', $payload)
+                ? ($payload['limit_uptime'] === '' ? null : trim((string)$payload['limit_uptime']))
+                : (array_key_exists('limit-uptime', $payload) ? ($payload['limit-uptime'] === '' ? null : trim((string)$payload['limit-uptime'])) : null);
+            $commandPayload['limit_bytes_total'] = array_key_exists('limit_bytes_total', $payload)
+                ? (($payload['limit_bytes_total'] === '' || $payload['limit_bytes_total'] === null) ? null : (int)$payload['limit_bytes_total'])
+                : (array_key_exists('limit-bytes-total', $payload) ? (($payload['limit-bytes-total'] === '' || $payload['limit-bytes-total'] === null) ? null : (int)$payload['limit-bytes-total']) : null);
 
             $commandId = queue_hotspot_command($config, 'update', $username, $commandPayload);
             if ($commandId === null) {

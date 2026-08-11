@@ -21,7 +21,7 @@
 :local total [:len $users]
 
 :local apiUrl "https://aratech-ldg0.onrender.com/api.php"
-:local syncKey "lQgFtB6JyUdb72wMorus7bOdLftDwYB0uh7QzsH2BGoe8UT4joCJcYJO380EYXUcQBQZms6bC0HyJUePbWo7SEbXi1vV7fUd64yo"
+:local syncKey "REPLACE_WITH_ROTATED_HOTSPOT_SYNC_KEY"
 :local headers ("Content-Type: application/json\r\nX-API-Key: " . $syncKey)
 :local fullUrl ($apiUrl . "?route=sync-users")
 
