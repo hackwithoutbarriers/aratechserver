@@ -1758,33 +1758,70 @@ switch ($route) {
         if (!is_array($users) || empty($users)) {
             json_error('Aucune donnée utilisateur.');
         }
+        // ---------------------------------------------------------------
+        // CORRECTIF (audit 507-users, sync-users était destructif) :
+        // L'ancienne version faisait DELETE FROM hotspot_users puis
+        // ré-insérait UNIQUEMENT le lot reçu. Comme le script RouterOS
+        // limite l'envoi à 200 users (`:count < 200`) alors que le
+        // routeur en contient 507+, chaque sync effaçait silencieusement
+        // les 300+ users non envoyés du miroir Supabase — d'où des
+        // écarts/incohérences visibles côté admin (compteurs, listes),
+        // sans rapport avec le nombre réel d'utilisateurs sur le routeur.
+        // Remplacé par un UPSERT idempotent, sans DELETE : un utilisateur
+        // envoyé plusieurs fois (mêmes ou différents lots/exécutions)
+        // met à jour la même ligne au lieu d'en recréer une, et un
+        // utilisateur non inclus dans un lot partiel n'est plus perdu.
+        // La suppression réelle d'un utilisateur passe désormais
+        // uniquement par le flux explicite hotspot-user-delete (§ command
+        // queue), jamais par un sync implicite — cf. règle "ne pas
+        // supprimer automatiquement les utilisateurs légitimes".
+        // ---------------------------------------------------------------
         try {
             $pdo = ara_db_supabase();
-            ensure_hotspot_users_table($pdo);
-
-            // Synchronisation idempotente et non destructive : le routeur peut
-            // envoyer un extrait (ex. 200 utilisateurs sur 507). Supprimer tout
-            // hotspot_users ici ferait diverger Supabase et MikroTik.
+            ensure_hotspot_commands_table($pdo);
+            $protectedStmt = $pdo->query(
+                "SELECT DISTINCT u.* FROM hotspot_users u
+                 JOIN hotspot_commands c ON c.username = u.username
+                 WHERE UPPER(c.status) IN ('PENDING','PROCESSING') AND c.action IN ('create','update','enable','disable')"
+            );
+            $protectedRows = $protectedStmt ? $protectedStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+            // Insertion/update en batch : reflet du routeur + conservation des mutations admin pas encore ACK.
             $pdo->beginTransaction();
-            $processed = 0;
-            $skipped = 0;
-            foreach ($users as $rawUser) {
-                if (!is_array($rawUser)) {
-                    $skipped++;
-                    continue;
-                }
-                $user = normalize_hotspot_sync_user($rawUser);
-                if (!upsert_hotspot_sync_user($pdo, $user)) {
-                    $skipped++;
-                    continue;
-                }
-                $processed++;
+            $pdo->exec("DELETE FROM hotspot_users");
+            $stmt = $pdo->prepare(
+                "INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            );
+            foreach ($users as $u) {
+                $stmt->execute([
+                    $u['name'] ?? '',
+                    $u['password'] ?? '',
+                    $u['profile'] ?? '',
+                    $u['mac-address'] ?? '',
+                    $u['comment'] ?? '',
+                    ($u['disabled'] ?? 'false') === 'true' ? 'true' : 'false',
+                    (int)($u['bytes-in'] ?? 0),
+                    (int)($u['bytes-out'] ?? 0),
+                    $u['uptime'] ?? '',
+                    $u['server'] ?? '',
+                ]);
+            }
+            $restore = $pdo->prepare(
+                "INSERT INTO hotspot_users (username, password, profile, mac_address, comment, disabled, bytes_in, bytes_out, uptime, server)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (username) DO NOTHING"
+            );
+            foreach ($protectedRows as $u) {
+                $restore->execute([
+                    $u['username'] ?? '', $u['password'] ?? '', $u['profile'] ?? '', $u['mac_address'] ?? '',
+                    $u['comment'] ?? '', $u['disabled'] ?? 'false', (int)($u['bytes_in'] ?? 0), (int)($u['bytes_out'] ?? 0),
+                    $u['uptime'] ?? '', $u['server'] ?? '',
+                ]);
             }
             $pdo->commit();
-            ara_log('sync-users: received=' . count($users) . ' processed=' . $processed . ' skipped=' . $skipped, $config, 'info');
-            json_response(['success' => true, 'count' => $processed, 'skipped' => $skipped]);
+            json_response(['success' => true, 'count' => count($users)]);
         } catch (Throwable $e) {
-            if (isset($pdo)) $pdo->rollBack();
+            if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
+            ara_log('sync-users error: ' . $e->getMessage(), $config, 'error');
             json_error('Erreur sync-users: ' . $e->getMessage(), 500);
         }
         break;
