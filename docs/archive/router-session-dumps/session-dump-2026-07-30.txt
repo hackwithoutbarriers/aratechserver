@@ -1,0 +1,598 @@
+MMM      MMM       KKK                          TTTTTTTTTTT      KKK
+  MMMM    MMMM       KKK                          TTTTTTTTTTT      KKK
+  MMM MMMM MMM  III  KKK  KKK  RRRRRR     OOOOOO      TTT     III  KKK  KKK
+  MMM  MM  MMM  III  KKKKK     RRR  RRR  OOO  OOO     TTT     III  KKKKK
+  MMM      MMM  III  KKK KKK   RRRRRR    OOO  OOO     TTT     III  KKK KKK
+  MMM      MMM  III  KKK  KKK  RRR  RRR   OOOOOO      TTT     III  KKK  KKK
+
+  MikroTik RouterOS 7.23.2 (c) 1999-2026       https://www.mikrotik.com/
+
+
+Press F1 for help
+
+
+[admin@ARA-Tech] > /system/script/print where !(name ~ "mikhmon" || source ~ "mik
+hmon" || comment ~ "mikhmon")
+Flags: I - INVALID 
+ 0   name="daily-backup" owner="admin" 
+     policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon 
+     dont-require-permissions=no last-started=2026-07-30 01:07:48 run-count=1 
+     source=
+       
+         :local sanitize do={
+           :local out ""
+           :for i from=0 to=([:len $str] - 1) do={
+             :local c [:pick $str $i ($i+1)]
+             :if ($c = "/" or $c = ":") do={ :set c "-" }
+             :set out ($out . $c)
+           }
+           :return $out
+         }
+         :local d [$sanitize str=[/system clock get date]]
+         :local t [$sanitize str=[/system clock get time]]
+         :local stamp ($d . "_" . $t)
+         /system backup save name=("backup-" . $stamp) password="<mot_de_passe_>
+         /export file=("export-" . $stamp)
+         :log info ("daily-backup: sauvegarde chiffree et export termines - " .>
+
+ 1   name="expire-10H" owner="admin" 
+     policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon 
+     dont-require-permissions=no last-started=2026-08-02 18:50:00 
+     run-count=391 
+     source=
+       :local dateint do={:local year [:pick $d 0 4];:local month [:pick $d 5 7]
+       :local timeint do={:local hours [:pick $t 0 2];:local minutes [:pick $t 3
+       :local date [/system clock get date]
+       :local time [/system clock get time]
+       :local today [$dateint d=$date]
+       :local curtime [$timeint t=$time]
+       :foreach i in=[/ip hotspot user find where profile="10H" and disabled=no]
+           :local comment [/ip hotspot user get $i comment]
+           :local name [/ip hotspot user get $i name]
+           :if ([:pick $comment 4]="-" and [:pick $comment 7]="-") do={
+               :local gettime [:pick $comment 11 19]
+               :local expd [$dateint d=$comment]
+               :local expt [$timeint t=$gettime]
+               :if (($expd < $today) or ($expd=$today and $expt<$curtime)) do={
+                   :local used [/ip hotspot user get $i uptime]
+                   :if ($used = "0s") do={ :set used "1s" }
+                   /ip hotspot user set $i limit-uptime=$used
+                   /ip hotspot active remove [find where user=$name]
+                   :onerror err in={
+                       /system scheduler add name=("purge-" . $name) interval=5h
+                   } do={}
+               }
+           }
+       }
+
+ 2   name="expire-24H" owner="admin" 
+     policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon 
+     dont-require-permissions=no last-started=2026-08-02 18:50:00 
+     run-count=189 
+     source=
+       :local dateint do={:local year [:pick $d 0 4];:local month [:pick $d 5 7]
+       :local timeint do={:local hours [:pick $t 0 2];:local minutes [:pick $t 3
+       :local date [/system clock get date]
+       :local time [/system clock get time]
+       :local today [$dateint d=$date]
+       :local curtime [$timeint t=$time]
+       :foreach i in=[/ip hotspot user find where profile="24H" and disabled=no]
+           :local comment [/ip hotspot user get $i comment]
+           :local name [/ip hotspot user get $i name]
+           :if ([:pick $comment 4]="-" and [:pick $comment 7]="-") do={
+               :local gettime [:pick $comment 11 19]
+               :local expd [$dateint d=$comment]
+               :local expt [$timeint t=$gettime]
+               :if (($expd < $today) or ($expd=$today and $expt<$curtime)) do={
+                   :local used [/ip hotspot user get $i uptime]
+                   :if ($used = "0s") do={ :set used "1s" }
+                   /ip hotspot user set $i limit-uptime=$used
+                   /ip hotspot active remove [find where user=$name]
+                   :onerror err in={
+                       /system scheduler add name=("purge-" . $name) interval=5h
+                   } do={}
+               }
+           }
+       }
+
+ 3   name="expire-week" owner="admin" 
+     policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon 
+     dont-require-permissions=no last-started=2026-08-08 21:05:35 
+     run-count=501 
+     source=
+       :local dateint do={:local year [:pick $d 0 4];:local month [:pick $d 5 7]
+       :local timeint do={:local hours [:pick $t 0 2];:local minutes [:pick $t 3
+       :local date [/system clock get date]
+       :local time [/system clock get time]
+       :local today [$dateint d=$date]
+       :local curtime [$timeint t=$time]
+       :foreach i in=[/ip hotspot user find where profile="Week" and disabled=no
+           :local comment [/ip hotspot user get $i comment]
+           :local name [/ip hotspot user get $i name]
+           :if ([:pick $comment 4]="-" and [:pick $comment 7]="-") do={
+               :local gettime [:pick $comment 11 19]
+               :local expd [$dateint d=$comment]
+               :local expt [$timeint t=$gettime]
+               :if (($expd < $today) or ($expd=$today and $expt<$curtime)) do={
+                   :local used [/ip hotspot user get $i uptime]
+                   :if ($used = "0s") do={ :set used "1s" }
+                   /ip hotspot user set $i limit-uptime=$used
+                   /ip hotspot active remove [find where user=$name]
+                   :onerror err in={
+                       /system scheduler add name=("purge-" . $name) interval=5h
+                   } do={}
+               }
+           }
+       }
+
+ 4   name="expire-month" owner="admin" 
+     policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon 
+     dont-require-permissions=no last-started=2026-08-10 13:39:44 
+     run-count=512 
+     source=
+       :local dateint do={:local year [:pick $d 0 4];:local month [:pick $d 5 7]
+       :local timeint do={:local hours [:pick $t 0 2];:local minutes [:pick $t 3
+       :local date [/system clock get date]
+       :local time [/system clock get time]
+       :local today [$dateint d=$date]
+       :local curtime [$timeint t=$time]
+       :foreach i in=[/ip hotspot user find where profile="Month" and disabled=n
+           :local comment [/ip hotspot user get $i comment]
+           :local name [/ip hotspot user get $i name]
+           :if ([:pick $comment 4]="-" and [:pick $comment 7]="-") do={
+               :local gettime [:pick $comment 11 19]
+               :local expd [$dateint d=$comment]
+               :local expt [$timeint t=$gettime]
+               :if (($expd < $today) or ($expd=$today and $expt<$curtime)) do={
+                   :local used [/ip hotspot user get $i uptime]
+                   :if ($used = "0s") do={ :set used "1s" }
+                   /ip hotspot user set $i limit-uptime=$used
+                   /ip hotspot active remove [find where user=$name]
+                   :onerror err in={
+                       /system scheduler add name=("purge-" . $name) interval=5h
+                   } do={}
+               }
+           }
+       }
+
+ 5   name="push-logs-hourly" owner="admin" policy=ftp,read,write,test 
+     dont-require-permissions=no last-started=2026-08-10 13:00:00 run-count=18 
+     source=
+       :local date [/system clock get date]
+       :local time [/system clock get time]
+       :local curhour [:pick $time 0 2]
+       :local payload ""
+       :local n 0
+       :foreach i in=[/log find] do={
+           :if ($n < 45) do={
+               :local t [/log get $i time]
+               :if ([:len $t] = 8) do={
+                   :local eh [:pick $t 0 2]
+                   :if ($eh = $curhour) do={
+                       :set payload ($payload . $t . "\t" . [/log get $i topics]
+                       :set n ($n + 1)
+                   }
+               }
+           }
+       }
+       :if ($n > 0) do={
+           :do {
+               /tool fetch http-method=post duration=6s http-header-field="Conte
+           } on-error={
+               :log warning "ARA Tech: push-logs echoue"
+           }
+       }
+
+ 6   name="push-hotspot-status" owner="admin" policy=ftp,read,write,test 
+     dont-require-permissions=no last-started=2026-08-10 13:40:00 
+     run-count=650 
+     source=
+       :local apiUrl "https://aratech-ldg0.onrender.com/api.php?route=push-statu
+       :local apiKey "lQgFtB6JyUdb72wMorus7bOdLftDwYB0uh7QzsH2BGoe8UT4joCJcYJO38
+       
+       :do {
+       
+           # -------------------------------------------------------------------
+           # Fonction utilitaire : echappement JSON (guillemets, antislash,
+           # retours a la ligne, tabulations). Indispensable car les usernames,
+           # commentaires ou identites peuvent contenir des caracteres qui
+           # casseraient un JSON construit "a la main" (voir \C2\A72.3 du brief)
+           # -------------------------------------------------------------------
+           :local jsonEscape do={
+               :local inStr [:tostr $1]
+               :local out ""
+               :local n [:len $inStr]
+               :local idx 0
+               :while ($idx < $n) do={
+                   :local c [:pick $inStr $idx ($idx + 1)]
+                   :if ($c = "\"") do={
+                       :set out ($out . "\\\"")
+                   } else={ :if ($c = "\\") do={
+                       :set out ($out . "\\\\")
+                   } else={ :if ($c = "\n") do={
+                       :set out ($out . "\\n")
+                   } else={ :if ($c = "\r") do={
+                       :set out ($out . "")
+                   } else={ :if ($c = "\t") do={
+                       :set out ($out . "\\t")
+                   } else={
+                       :set out ($out . $c)
+                   }}}}}
+                   :set idx ($idx + 1)
+               }
+               :return $out
+           }
+       
+           # -------------------------------------------------------------------
+           # 1) Informations routeur (/system identity, /system resource)
+           #    Chaque valeur est recuperee individuellement et proteguee par un
+           #    bloc :do/on-error : si une propriete n'existe pas sur cette
+           #    version de RouterOS, on retombe sur une valeur vide plutot que d
+           #    faire echouer tout le script (voir \C2\A72.2 et \C2\A718 du brie
+           # -------------------------------------------------------------------
+           :local routerIdentity ""
+           :do { :set routerIdentity [:tostr [/system identity get name]] } on-e
+       
+           :local routerUptime ""
+           :do { :set routerUptime [:tostr [/system resource get uptime]] } on-e
+       
+           :local routerVersion ""
+           :do { :set routerVersion [:tostr [/system resource get version]] } on
+       
+           :local cpuLoad ""
+           :do { :set cpuLoad [/system resource get cpu-load] } on-error={ :set 
+       
+           :local memTotal ""
+           :do { :set memTotal [/system resource get total-memory] } on-error={ 
+       
+           :local memFree ""
+           :do { :set memFree [/system resource get free-memory] } on-error={ :s
+       
+           :local cpuField "null"
+           :if ($cpuLoad != "") do={ :set cpuField [:tostr $cpuLoad] }
+       
+           :local memTotalField "null"
+           :if ($memTotal != "") do={ :set memTotalField [:tostr $memTotal] }
+       
+           :local memFreeField "null"
+           :if ($memFree != "") do={ :set memFreeField [:tostr $memFree] }
+       
+           :local routerJson ("{\"identity\":\"" . [$jsonEscape $routerIdentity]
+               "\",\"uptime\":\"" . [$jsonEscape $routerUptime] . \
+               "\",\"version\":\"" . [$jsonEscape $routerVersion] . \
+               "\",\"cpu\":" . $cpuField . \
+               ",\"memory_total\":" . $memTotalField . \
+               ",\"memory_free\":" . $memFreeField . "}")
+       
+           # -------------------------------------------------------------------
+           # 2) Sessions Hotspot actives (/ip hotspot active print)
+           #    Le "profil" n'est pas expose directement par /ip hotspot active 
+           #    on le recupere via /ip hotspot user (meme nom d'utilisateur), av
+           #    repli sur une chaine vide si introuvable (compte statique, etc.)
+           # -------------------------------------------------------------------
+           :local activeIds [/ip hotspot active find]
+           :local activeCount [:len $activeIds]
+       
+           :local usersJson "["
+           :local isFirst true
+       
+           :foreach s in=$activeIds do={
+               :local uUser ""
+               :do { :set uUser [:tostr [/ip hotspot active get $s user]] } on-e
+       
+               :local uMac ""
+               :do { :set uMac [:tostr [/ip hotspot active get $s mac-address]] 
+       
+               :local uIp ""
+               :do { :set uIp [:tostr [/ip hotspot active get $s address]] } on-
+       
+               :local uUptime ""
+               :do { :set uUptime [:tostr [/ip hotspot active get $s uptime]] } 
+       
+               :local uServer ""
+               :do { :set uServer [:tostr [/ip hotspot active get $s server]] } 
+       
+               :local uBytesIn ""
+               :do { :set uBytesIn [/ip hotspot active get $s bytes-in] } on-err
+       
+               :local uBytesOut ""
+               :do { :set uBytesOut [/ip hotspot active get $s bytes-out] } on-e
+       
+               :local uProfile ""
+               :do {
+                   :local uid [/ip hotspot user find where name=$uUser]
+                   :if ([:len $uid] > 0) do={
+                       :set uProfile [:tostr [/ip hotspot user get [:pick $uid 0
+                   }
+               } on-error={ :set uProfile "" }
+       
+               :local bytesInField "null"
+               :if ($uBytesIn != "") do={ :set bytesInField [:tostr $uBytesIn] }
+       
+               :local bytesOutField "null"
+               :if ($uBytesOut != "") do={ :set bytesOutField [:tostr $uBytesOut
+       
+               :if ($isFirst = false) do={ :set usersJson ($usersJson . ",") }
+               :set isFirst false
+       
+               :set usersJson ($usersJson . "{\"user\":\"" . [$jsonEscape $uUser
+                   "\",\"mac\":\"" . [$jsonEscape $uMac] . \
+                   "\",\"ip\":\"" . [$jsonEscape $uIp] . \
+                   "\",\"profile\":\"" . [$jsonEscape $uProfile] . \
+                   "\",\"uptime\":\"" . [$jsonEscape $uUptime] . \
+                   "\",\"bytes_in\":" . $bytesInField . \
+                   ",\"bytes_out\":" . $bytesOutField . \
+                   ",\"server\":\"" . [$jsonEscape $uServer] . "\"}")
+           }
+       
+           :set usersJson ($usersJson . "]")
+       
+           # -------------------------------------------------------------------
+           # 3) Assemblage du payload final et envoi (compatibilite conservee :
+           #    HTTPS, POST, en-tete X-API-Key, meme route api.php?route=push-st
+           #    - voir \C2\A72.4 du brief).
+           # -------------------------------------------------------------------
+           :local payload ("{\"active\":" . $activeCount . \
+               ",\"router\":" . $routerJson . \
+               ",\"users\":" . $usersJson . "}")
+       
+           /tool fetch url=$apiUrl http-method=post \
+               http-header-field=("Content-Type: application/json,X-API-Key: " .
+               http-data=$payload keep-result=no
+       
+           :log info ("ARA-Tech: push-status envoye (" . $activeCount . " sessio
+       
+       } on-error={
+           :log warning "ARA-Tech: echec du push-status (voir /log pour le detai
+       }
+
+ 7   name="sync-all-expiry" owner="admin" policy=ftp,read,write,test 
+     dont-require-permissions=no last-started=2026-08-10 13:30:00 run-count=22 
+     
+     source=
+       :local syncKey "lQgFtB6JyUdb72wMorus7bOdLftDwYB0uh7QzsH2BGoe8UT4joCJcYJO3
+       :local apiUrl "https://aratech-ldg0.onrender.com/api.php?route=set-expiry
+       
+       /ip hotspot user {
+           :foreach u in=[find] do={
+               :local name    [get $u name]
+               :local comment [get $u comment]
+       
+               # On ne garde que les commentaires qui ressemblent \C3\A0 une dat
+               # Format attendu : "YYYY-MM-DD HH:MM:SS" \E2\86\92 19 caract\C3\A
+               # le tiret en position 5 et 8, et l\E2\80\99espace en position 11
+               :if ([:len $comment] = 19 && \
+                    [:pick $comment 4 5] = "-" && \
+                    [:pick $comment 7 8] = "-" && \
+                    [:pick $comment 10 11] = " ") do={
+                   :local json ("{\"user\":\"" . $name . "\",\"expiry\":\"" . $c
+                   :do {
+                       /tool fetch url=($apiUrl) mode=https http-method=post \
+                           http-header-field="X-API-Key: $syncKey" \
+                           http-data=$json \
+                           check-certificate=yes
+                   } on-error={}
+               }
+           }
+       }
+
+ 8   name="sync-users-supabase" owner="admin" 
+     policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon 
+     dont-require-permissions=no last-started=2026-08-10 13:39:33 
+     run-count=168 source=
+       :local batchSize 100
+       
+       :local users [/ip hotspot user print as-value]
+       :local total [:len $users]
+       
+       :local apiUrl "https://aratech-ldg0.onrender.com/api.php"
+       :local syncKey "lQgFtB6JyUdb72wMorus7bOdLftDwYB0uh7QzsH2BGoe8UT4joCJcYJO3
+       :local headers ("Content-Type: application/json\r\nX-API-Key: " . $syncKe
+       :local fullUrl ($apiUrl . "?route=sync-users")
+       
+       :local sent 0
+       :local batchNum 0
+       
+       :while ($sent < $total) do={
+           :local batchData ({})
+           :local end ($sent + $batchSize)
+           :if ($end > $total) do={ :set end $total }
+       
+           :local idx $sent
+           :while ($idx < $end) do={
+               :local u [:pick $users $idx]
+               :local userMap {
+                   "name"=($u->"name");
+                   "password"=($u->"password");
+                   "profile"=($u->"profile");
+                   "mac-address"=($u->"mac-address");
+                   "comment"=($u->"comment");
+                   "disabled"=($u->"disabled");
+                   "bytes-in"=($u->"bytes-in");
+                   "bytes-out"=($u->"bytes-out");
+                   "uptime"=($u->"uptime");
+                   "server"=($u->"server")
+               }
+               :set batchData ($batchData, $userMap)
+               :set idx ($idx + 1)
+           }
+       
+           :local json [:serialize to=json {"users"=$batchData}]
+           :set batchNum ($batchNum + 1)
+       
+           :do {
+               /tool fetch url=$fullUrl http-method=post http-header-field=$head
+               :log info "sync-users: lot $batchNum envoye ($sent a $end sur $to
+           } on-error={
+               :log warning "sync-users: echec envoi lot $batchNum ($sent a $end
+           }
+       
+           :set sent $end
+           :delay 500ms
+       }
+       
+       :log info "sync-users: termine - $total utilisateurs envoyes en $batchNum
+
+ 9   name="sync-profiles-supabase" owner="admin" 
+     policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon 
+     dont-require-permissions=no last-started=2026-08-08 16:38:27 run-count=8 
+     source=
+       :local profiles [/ip hotspot user profile print as-value]
+       :local profileData ({})
+       :local count 0
+       
+       :foreach p in=$profiles do={
+         :local profMap {
+           "name"=($p->"name");
+           "shared-users"=($p->"shared-users");
+           "rate-limit"=($p->"rate-limit");
+           "on-login"=($p->"on-login");
+           "address-pool"=($p->"address-pool")
+         }
+         :set profileData ($profileData, $profMap)
+         :set count ($count + 1)
+       }
+       
+       :local json [:serialize to=json {"profiles"=$profileData}]
+       :local apiUrl "https://aratech-ldg0.onrender.com/api.php"
+       :local syncKey "lQgFtB6JyUdb72wMorus7bOdLftDwYB0uh7QzsH2BGoe8UT4joCJcYJO3
+       :local fullUrl ($apiUrl . "?route=sync-profiles")
+       :local headers ("Content-Type: application/json\r\nX-API-Key: " . $syncKe
+       
+       /tool fetch url=$fullUrl http-method=post http-header-field=$headers http
+       
+       :log info "sync-profiles: envoy\C3\A9 $count profils"
+
+10   name="expire-abonnement" owner="admin" 
+     policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon 
+     dont-require-permissions=no run-count=0 
+     source=
+       :local dateint do={:local year [:pick $d 0 4];:local month [:pick $d 5 7]
+       :local timeint do={:local hours [:pick $t 0 2];:local minutes [:pick $t 3
+       :local date [/system clock get date]
+       :local time [/system clock get time]
+       :local today [$dateint d=$date]
+       :local curtime [$timeint t=$time]
+       :foreach i in=[/ip hotspot user find where profile="Abonnement" and disab
+           :local comment [/ip hotspot user get $i comment]
+           :local name [/ip hotspot user get $i name]
+           :if ([:pick $comment 4]="-" and [:pick $comment 7]="-") do={
+               :local gettime [:pick $comment 11 19]
+               :local expd [$dateint d=$comment]
+               :local expt [$timeint t=$gettime]
+               :if (($expd < $today) or ($expd=$today and $expt<$curtime)) do={
+                   :local used [/ip hotspot user get $i uptime]
+                   :if ($used = "0s") do={ :set used "1s" }
+                   /ip hotspot user set $i limit-uptime=$used
+                   /ip hotspot active remove [find where user=$name]
+                   :onerror err in={
+                       /system scheduler add name=("purge-" . $name) interval=5h
+                   } do={}
+               }
+           }
+       }
+
+11   name="hotspot-command-worker" owner="admin" 
+     policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon 
+     dont-require-permissions=no run-count=0 
+     source=
+       # Hotspot V2.1 Phase H3 - Command worker (RouterOS v7 with :deserialize J
+       # Configure these two values after import.
+       :global hotspotApiUrl "https://aratech-ldg0.onrender.com/api.php"
+       :global hotspotSyncKey "lQgFtB6JyUdb72wMorus7bOdLftDwYB0uh7QzsH2BGoe8UT4j
+       
+       :local routerIdentity [/system identity get name]
+       :local pendingUrl ($hotspotApiUrl . "?route=hotspot-commands-pending&rout
+       :local fetchResult ""
+       
+       :do {
+           :set fetchResult [/tool fetch url=$pendingUrl mode=https http-method=
+       } on-error={
+           :log warning "hotspot-command-worker: pending fetch failed"
+           :return
+       }
+       
+       :local body ($fetchResult->"data")
+       :if ([:typeof $body] = "nothing" || [:len $body] = 0) do={ :return }
+       
+       :local decoded [:deserialize from=json value=$body]
+       :if (($decoded->"success") != true) do={
+           :log warning "hotspot-command-worker: API returned failure"
+           :return
+       }
+       
+       :local items (($decoded->"data")->"items")
+       :foreach command in=$items do={
+           :local commandId ($command->"id")
+           :local action ($command->"action")
+           :local payload ($command->"payload")
+           :local username ($payload->"username")
+           :local ok false
+           :local msg "failed"
+       
+           :do {
+               :if (($action != "create") && ($action != "update") && ($action !
+               :if ([:typeof $username] = "nothing" || [:len $username] = 0) do=
+               :local ids [/ip hotspot user find where name=$username]
+       
+               :if ($action = "create") do={
+                   :local password ($payload->"password")
+                   :if ([:typeof $password] = "nothing" || [:len $password] = 0)
+                   :if ([:len $ids] > 0) do={
+                       :set ok true; :set msg "already exists"
+                   } else={
+                       :local profile ($payload->"profile")
+                       :if ([:typeof $profile] = "nothing" || [:len $profile] = 
+                       :local comment ($payload->"comment")
+                       :if ([:typeof $comment] = "nothing") do={ :set comment ""
+                       /ip hotspot user add name=$username password=$password pr
+                       :set ok true; :set msg "created"
+                   }
+               }
+       
+               :if ($action = "update") do={
+                   :if ([:len $ids] = 0) do={ :error "user not found" }
+                   :local id [:pick $ids 0]
+                   :local profile ($payload->"profile")
+                   :local password ($payload->"password")
+                   :local comment ($payload->"comment")
+                   :if ([:typeof $profile] != "nothing" && [:len $profile] > 0) 
+                   :if ([:typeof $password] != "nothing" && [:len $password] > 0
+                   :if ([:typeof $comment] != "nothing") do={ /ip hotspot user s
+                   :set ok true; :set msg "updated"
+               }
+       
+               :if ($action = "enable") do={
+                   :if ([:len $ids] = 0) do={ :error "user not found" }
+                   /ip hotspot user set [:pick $ids 0] disabled=no
+                   :set ok true; :set msg "enabled"
+               }
+       
+               :if ($action = "disable") do={
+                   :if ([:len $ids] = 0) do={ :error "user not found" }
+                   /ip hotspot user set [:pick $ids 0] disabled=yes
+                   :set ok true; :set msg "disabled"
+               }
+       
+               :if ($action = "delete") do={
+                   :if ([:len $ids] = 0) do={
+                       :set ok true; :set msg "already absent"
+                   } else={
+                       /ip hotspot user remove [:pick $ids 0]
+                       :set ok true; :set msg "deleted"
+                   }
+               }
+           } on-error={
+               :set ok false
+               :set msg "router error"
+           }
+       
+           :local ackJson ("{\"command_id\":" . $commandId . ",\"success\":" . $
+           :do {
+               /tool fetch url=($hotspotApiUrl . "?route=hotspot-command-ack") m
+           } on-error={
+               :log warning ("hotspot-command-worker: ACK failed command_id=" . 
+           }
+       }
+
+[admin@ARA-Tech] >
