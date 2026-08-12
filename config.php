@@ -30,9 +30,6 @@ return [
     ],
     'admin_password_hash' => getenv('ADMIN_PASSWORD_HASH') ?: '',
 
-    'db_path'  => __DIR__ . '/data/transactions.sqlite',
-    'log_path' => __DIR__ . '/data/app.log',
-
     'allowed_origin' => trim((string)(getenv('ALLOWED_ORIGIN') ?: '')),
     'debug' => filter_var(getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BOOLEAN),
 ];
