@@ -1,79 +1,36 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * Return the application database connection.
+ *
+ * Local SQLite storage has been removed. Keep the historical ara_db()
+ * function as a compatibility wrapper because api.php still calls it from
+ * a few legacy fallback paths; it now always points to Supabase/PostgreSQL.
+ */
 function ara_db(array $config): PDO
 {
-    $dir = dirname($config['db_path']);
-    if (!is_dir($dir)) mkdir($dir, 0770, true);
-
-    $pdo = new PDO('sqlite:' . $config['db_path']);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->exec('PRAGMA journal_mode = WAL;');
-
-    // Table des annonces
-    $pdo->exec("CREATE TABLE IF NOT EXISTS ads (
-        id          TEXT PRIMARY KEY,
-        type        TEXT NOT NULL,
-        title       TEXT NOT NULL,
-        description TEXT,
-        image       TEXT,
-        url         TEXT,
-        start       TEXT,
-        end         TEXT,
-        active      INTEGER NOT NULL DEFAULT 1,
-        price       INTEGER,
-        views       INTEGER NOT NULL DEFAULT 0,
-        clicks      INTEGER NOT NULL DEFAULT 0,
-        created_at  TEXT NOT NULL,
-        updated_at  TEXT
-    )");
-
-    // Table des événements de tracking
-    $pdo->exec("CREATE TABLE IF NOT EXISTS track_events (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        item_id    TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        user       TEXT,
-        created_at TEXT NOT NULL
-    )");
-
-    // Table de fidélité
-    $pdo->exec("CREATE TABLE IF NOT EXISTS loyalty (
-        user          TEXT PRIMARY KEY,
-        points        INTEGER NOT NULL DEFAULT 0,
-        topups        INTEGER NOT NULL DEFAULT 0,
-        referral_code TEXT,
-        created_at    TEXT NOT NULL,
-        updated_at    TEXT
-    )");
-
-    // Table des transactions (gardée pour une éventuelle réactivation)
-    $pdo->exec("CREATE TABLE IF NOT EXISTS transactions (
-        id                INTEGER PRIMARY KEY AUTOINCREMENT,
-        identifier        TEXT UNIQUE NOT NULL,
-        phone             TEXT,
-        package_code      TEXT,
-        amount            INTEGER,
-        status            TEXT NOT NULL DEFAULT 'pending',
-        created_at        TEXT NOT NULL,
-        updated_at        TEXT
-    )");
-
-    return $pdo;
+    return ara_db_supabase();
 }
 
+/**
+ * Application logging without filesystem persistence.
+ * Render/container logs are the authoritative runtime log sink.
+ */
 function ara_log(string $message, array $config, string $level = 'info'): void
 {
-    if ($config['debug'] === false && $level === 'debug') return;
-    file_put_contents(
-        $config['log_path'],
-        '[' . date('Y-m-d H:i:s') . '] [' . strtoupper($level) . '] ' . $message . PHP_EOL,
-        FILE_APPEND | LOCK_EX
+    if (($config['debug'] ?? false) === false && $level === 'debug') {
+        return;
+    }
+
+    error_log(
+        '[' . date('Y-m-d H:i:s') . '] [' . strtoupper($level) . '] ' . $message
     );
 }
 
 // ---------------------------------------------------------------------
-// Fonctions Turso (centralisées ici pour être utilisées partout)
+// Fonctions Turso conservées uniquement pour compatibilité avec certains
+// chemins historiques de l'API. Elles ne constituent plus un stockage local.
 // ---------------------------------------------------------------------
 
 function turso_pipeline(array $config, array $stmts): array
@@ -150,15 +107,21 @@ function turso_rows(array $result): array
     return $rows;
 }
 
-function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, string $tursoQuery, array $tursoArgs, string $insertLocalSQL): bool
-{
-    // Vérifier si la locale est vide
+function restore_from_turso_if_empty(
+    PDO $pdo,
+    array $config,
+    string $table,
+    string $tursoQuery,
+    array $tursoArgs,
+    string $insertLocalSQL
+): bool {
+    // This is retained only for legacy compatibility. $pdo is Supabase now,
+    // so no local database is created or populated by this function.
     $stmt = $pdo->query("SELECT COUNT(*) FROM $table");
     if ((int)$stmt->fetchColumn() > 0) {
         return false;
     }
 
-    // Turso configuré ?
     if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
         return false;
     }
@@ -181,13 +144,12 @@ function restore_from_turso_if_empty(PDO $pdo, array $config, string $table, str
         }
         return !empty($rows);
     } catch (Throwable $e) {
-        // Silencieux
+        return false;
     }
-    return false;
 }
 
 /**
- * Connexion à la base PostgreSQL Supabase.
+ * Connexion PostgreSQL Supabase.
  * Les paramètres proviennent des variables d'environnement Render.
  */
 function ara_db_supabase(): PDO
@@ -198,9 +160,13 @@ function ara_db_supabase(): PDO
     $user     = trim(getenv('SUPABASE_PGUSER')     ?: 'postgres.pqmmuaavceftkovzrhyg');
     $password = trim(getenv('SUPABASE_PGPASSWORD') ?: '');
 
+    if ($password === '') {
+        throw new RuntimeException('SUPABASE_PGPASSWORD non configuré.');
+    }
+
     $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
     $pdo = new PDO($dsn, $user, $password, [
-        PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
     $pdo->exec("SET statement_timeout = '10s'");

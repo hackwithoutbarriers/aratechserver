@@ -1,11 +1,10 @@
 FROM php:8.2-apache
 
 RUN apt-get update && apt-get install -y \
-    libsqlite3-dev \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN docker-php-ext-install pdo pdo_sqlite pdo_pgsql
+RUN docker-php-ext-install pdo pdo_pgsql
 RUN a2enmod rewrite headers
 
 COPY . /var/www/html/
@@ -15,7 +14,7 @@ RUN printf '%s\n' \
     '    Require all denied' \
     '</FilesMatch>' \
     '' \
-    '<DirectoryMatch "^/var/www/html/(\\.git|tests|docs|database|mikrotik|data)(/|$)">' \
+    '<DirectoryMatch "^/var/www/html/(\\.git|tests|docs|database|mikrotik)(/|$)">' \
     '    Require all denied' \
     '</DirectoryMatch>' \
     '' \
@@ -27,8 +26,7 @@ RUN printf '%s\n' \
     && a2enconf security-phase1
 
 RUN chown -R www-data:www-data /var/www/html \
-    && find /var/www/html -type d -exec chmod 755 {} \; \
-    && find /var/www/html -type f -exec chmod 644 {} \; \
-    && chmod -R u+rwX /var/www/html/data
+    && find /var/www/html -type d -exec chmod 755 {} \\; \
+    && find /var/www/html -type f -exec chmod 644 {} \;
 
 EXPOSE 80

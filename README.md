@@ -27,6 +27,9 @@ Routeur MikroTik  ──push (scripts .rsc)──>  api.php  ──>  Supabase (
   cycle.
 - Les sessions actives sont un instantané (snapshot) poussé périodiquement
   par le routeur, pas une connexion live.
+- **Persistance** : toutes les données applicatives persistantes sont dans
+  PostgreSQL/Supabase. Le conteneur Render ne maintient plus de SQLite,
+  fichier de log applicatif ou autre état métier local.
 
 Le jeton administrateur transite uniquement via l'en-tête HTTP
 `X-Admin-Token`, jamais dans une URL (voir `lib/api_client.php`).
@@ -34,21 +37,24 @@ Le jeton administrateur transite uniquement via l'en-tête HTTP
 ## Arborescence
 
 ```
-├── index.php, api.php, config.php, db.php, ads.json   # Webroot (racine = DocumentRoot, voir Dockerfile)
-├── admin/               # Back-office (une seule copie de chaque page)
-├── lib/                 # Logique partagée (client API interne, import CSV)
-├── database/migrations/ # Schéma SQL, à exécuter dans l'ordre sur Supabase
+├── index.php, api.php, config.php, db.php, ads.json   # Webroot
+├── admin/               # Back-office
+├── lib/                 # Logique partagée
+├── database/migrations/ # Schéma PostgreSQL/Supabase, à exécuter dans l'ordre
 ├── mikrotik-scripts/    # Scripts RouterOS déployés sur le routeur
-├── docs/                # Documentation API + historique des audits
-└── data/                # Stockage local protégé (.htaccess)
+└── docs/                # Documentation API + historique des audits
 ```
 
 ## Déploiement
 
 `Dockerfile` copie l'intégralité du dépôt dans `/var/www/html/` : la racine
-du dépôt est le webroot servi. Exécuter les migrations SQL de
-`database/migrations/` (dans l'ordre numérique) sur la base Supabase avant
-le premier déploiement.
+du dépôt est le webroot servi. Le runtime PHP embarque uniquement PDO
+PostgreSQL (`pdo_pgsql`) pour la persistance applicative.
+
+Exécuter les migrations SQL de `database/migrations/` (dans l'ordre numérique)
+sur la base Supabase avant le premier déploiement, notamment
+`010_application_legacy_tables.sql` pour les fonctions annonces/fidélité/
+tracking encore exposées par l'API.
 
 ## Documentation
 
