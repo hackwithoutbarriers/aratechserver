@@ -25,8 +25,9 @@ RUN printf '%s\n' \
     > /etc/apache2/conf-available/security-phase1.conf \
     && a2enconf security-phase1
 
+# CORRECTION ICI : Remplacement de \\; par \; pour le premier find
 RUN chown -R www-data:www-data /var/www/html \
-    && find /var/www/html -type d -exec chmod 755 {} \\; \
+    && find /var/www/html -type d -exec chmod 755 {} \; \
     && find /var/www/html -type f -exec chmod 644 {} \;
 
 EXPOSE 80
