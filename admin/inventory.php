@@ -1,256 +1,213 @@
 <?php
 declare(strict_types=1);
+
 require __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
+require_once __DIR__ . '/../lib/hotspot_csv_import.php';
+
 $config = require __DIR__ . '/../config.php';
+$pageTitle = 'Inventaire des codes WiFi - ARA Tech WiFi';
 
-$pageTitle = 'Gestion des Stocks - ARA Tech WiFi';
+if (empty($_SESSION['hotspot_csv_csrf'])) {
+    $_SESSION['hotspot_csv_csrf'] = bin2hex(random_bytes(32));
+}
+$csrf = $_SESSION['hotspot_csv_csrf'];
 
-$statusMeta = [
-    'Disponible' => ['badge' => 'success',   'dot' => '🟢'],
-    'Vendu'      => ['badge' => 'danger',    'dot' => '🔴'],
-    'Expiré'     => ['badge' => 'secondary', 'dot' => '⚪'],
-];
-
-// ============================================================
-// TRAITEMENT DE L'IMPORTATION CSV (POST)
-// ============================================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'import_csv') {
-    $file = $_FILES['csv_file'] ?? null;
-    $maxUploadBytes = 1024 * 1024; // 1 MiB — protection minimale, métier inchangé.
-
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
-        if (!$file || !isset($file['error'], $file['tmp_name'], $file['name'], $file['size'])) {
-            throw new RuntimeException('Fichier téléversé manquant.');
-        }
-        if ($file['error'] !== UPLOAD_ERR_OK) {
-            throw new RuntimeException('Erreur lors du téléversement du fichier.');
-        }
-        if (!is_uploaded_file($file['tmp_name'])) {
-            throw new RuntimeException('Source de téléversement invalide.');
-        }
-        if ((int)$file['size'] <= 0 || (int)$file['size'] > $maxUploadBytes) {
-            throw new RuntimeException('Fichier trop volumineux ou vide (maximum 1 MiB).');
-        }
-        if (strtolower((string)pathinfo($file['name'], PATHINFO_EXTENSION)) !== 'csv') {
-            throw new RuntimeException('Le fichier doit être au format .csv.');
+        if (!hash_equals($csrf, (string)($_POST['csrf_token'] ?? ''))) {
+            throw new RuntimeException('Requête refusée : token CSRF invalide.');
         }
 
-        $finfo = new finfo(FILEINFO_MIME_TYPE);
-        $mime = $finfo->file($file['tmp_name']);
-        $allowedMimes = ['text/plain', 'text/csv', 'application/csv', 'application/vnd.ms-excel'];
-        if ($mime === false || !in_array($mime, $allowedMimes, true)) {
-            throw new RuntimeException('Type MIME CSV non autorisé.');
+        $action = (string)($_POST['action'] ?? '');
+        $pdo = ara_db_supabase();
+
+        if ($action === 'preview') {
+            $file = $_FILES['csv_file'] ?? [];
+            hotspot_csv_validate_upload($file);
+            $parsed = hotspot_csv_read((string)$file['tmp_name'], $pdo);
+            $_SESSION['hotspot_csv_preview'] = [
+                'created_at' => time(),
+                'source_name' => basename((string)$file['name']),
+                'delimiter' => $parsed['delimiter'],
+                'unknown_headers' => $parsed['unknown_headers'],
+                'rows' => $parsed['rows'],
+            ];
+            header('Location: inventory.php?preview=1');
+            exit;
         }
 
-        $pdoSupa = ara_db_supabase();
-        // Le schéma (tables `profiles` et `tickets`) est garanti par
-        // database/migrations/009_commercial_profiles_tickets.sql, à exécuter
-        // sur Supabase avant déploiement. L'appel à ara_ensure_finance_tables()
-        // qui existait ici a été retiré : cette fonction n'a jamais été
-        // définie nulle part dans le dépôt, ce qui provoquait une Fatal Error
-        // PHP à chaque accès à cette page (voir docs/audits/PHASE2.md).
-
-        $handle = fopen($file['tmp_name'], 'r');
-        if ($handle === false) {
-            throw new RuntimeException('Impossible de lire le fichier téléversé.');
-        }
-
-        // Détection du délimiteur (Mikhmon exporte parfois en ';')
-        $firstLine = fgets($handle);
-        if ($firstLine === false) {
-            fclose($handle);
-            throw new RuntimeException('Fichier CSV vide.');
-        }
-        $delimiter = substr_count($firstLine, ';') > substr_count($firstLine, ',') ? ';' : ',';
-        rewind($handle);
-
-        $header = fgetcsv($handle, 0, $delimiter);
-        if ($header === false || $header === null) {
-            fclose($handle);
-            throw new RuntimeException('En-tête CSV illisible.');
-        }
-        $header[0] = preg_replace('/^\x{FEFF}/u', '', (string)$header[0]);
-        $header = array_map(static fn($h) => strtolower(trim((string)$h)), $header);
-
-        $codeIdx = array_search('code', $header, true);
-        if ($codeIdx === false) {
-            $codeIdx = array_search('username', $header, true);
-        }
-        $profileIdx = array_search('profile', $header, true);
-
-        if ($codeIdx === false || $profileIdx === false) {
-            fclose($handle);
-            throw new RuntimeException("Colonnes 'code'/'username' et 'profile' introuvables dans l'en-tête du CSV.");
-        }
-
-        $profileMap = [];
-        foreach ($pdoSupa->query("SELECT id, name FROM profiles") as $row) {
-            $profileMap[strtolower(trim((string)$row['name']))] = (int)$row['id'];
-        }
-
-        $insertStmt = $pdoSupa->prepare(
-            "INSERT INTO tickets (profile_id, code, status) VALUES (?, ?, 'Disponible')
-             ON CONFLICT (code) DO NOTHING"
-        );
-
-        $imported = 0;
-        $skippedNoProfile = 0;
-        $skippedEmpty = 0;
-
-        while (($row = fgetcsv($handle, 0, $delimiter)) !== false) {
-            if ($row === [null] || count($row) <= max($codeIdx, $profileIdx)) {
-                continue;
+        if ($action === 'confirm') {
+            $preview = $_SESSION['hotspot_csv_preview'] ?? null;
+            if (!is_array($preview) || empty($preview['rows'])) {
+                throw new RuntimeException('Aucune prévisualisation à confirmer.');
             }
-            $code = trim((string)($row[$codeIdx] ?? ''));
-            $profileName = trim((string)($row[$profileIdx] ?? ''));
+            if ((int)($preview['created_at'] ?? 0) < time() - 1800) {
+                unset($_SESSION['hotspot_csv_preview']);
+                throw new RuntimeException('La prévisualisation a expiré. Veuillez sélectionner à nouveau le CSV.');
+            }
 
-            if ($code === '') {
-                $skippedEmpty++;
-                continue;
+            $pdo->beginTransaction();
+            try {
+                $pdo->query('SELECT 1 FROM hotspot_users LIMIT 1');
+                $pdo->query('SELECT 1 FROM hotspot_profiles LIMIT 1');
+                $pdo->query('SELECT 1 FROM hotspot_commands LIMIT 1');
+                $report = hotspot_csv_import_rows($pdo, $preview['rows']);
+                $pdo->commit();
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                throw $e;
             }
-            $profileId = $profileMap[strtolower($profileName)] ?? null;
-            if ($profileId === null) {
-                $skippedNoProfile++;
-                continue;
-            }
-            $insertStmt->execute([$profileId, $code]);
-            if ($insertStmt->rowCount() > 0) {
-                $imported++;
-            }
-        }
-        fclose($handle);
 
-        $msg = "$imported ticket(s) importé(s) avec succès.";
-        if ($skippedNoProfile > 0) {
-            $msg .= " $skippedNoProfile ligne(s) ignorée(s) (profil inconnu dans la table profiles).";
+            unset($_SESSION['hotspot_csv_preview']);
+            $_SESSION['hotspot_csv_report'] = $report;
+            header('Location: inventory.php?done=1');
+            exit;
         }
-        if ($skippedEmpty > 0) {
-            $msg .= " $skippedEmpty ligne(s) ignorée(s) (code vide).";
+
+        if ($action === 'cancel') {
+            unset($_SESSION['hotspot_csv_preview']);
+            header('Location: inventory.php');
+            exit;
         }
-        $_SESSION['flash_success'] = $msg;
+
+        throw new RuntimeException('Action d’import inconnue.');
     } catch (Throwable $e) {
-        $_SESSION['flash_error'] = "Erreur d'importation : " . $e->getMessage();
+        $_SESSION['hotspot_csv_error'] = $e->getMessage();
+        header('Location: inventory.php');
+        exit;
     }
-
-    header('Location: inventory.php');
-    exit;
 }
 
-$statusFilter = $_GET['status'] ?? 'all';
-$allowedStatus = array_keys($statusMeta);
-if (!in_array($statusFilter, $allowedStatus, true)) {
-    $statusFilter = 'all';
-}
+$preview = $_SESSION['hotspot_csv_preview'] ?? null;
+$report = $_SESSION['hotspot_csv_report'] ?? null;
+$error = $_SESSION['hotspot_csv_error'] ?? null;
+unset($_SESSION['hotspot_csv_report'], $_SESSION['hotspot_csv_error']);
 
-$tickets = [];
-$counts = ['Disponible' => 0, 'Vendu' => 0, 'Expiré' => 0];
-$dbError = '';
-
-try {
-    $pdoSupa = ara_db_supabase();
-    // Là aussi : schéma garanti par la migration 009, pas de création de
-    // table à l'exécution (voir note ci-dessus).
-    foreach ($pdoSupa->query("SELECT status, COUNT(*) AS cnt FROM tickets GROUP BY status") as $row) {
-        if (isset($counts[$row['status']])) {
-            $counts[$row['status']] = (int)$row['cnt'];
+$stats = ['total' => 0, 'valid' => 0, 'invalid' => 0, 'new' => 0, 'updated' => 0];
+$previewErrors = [];
+if (is_array($preview) && !empty($preview['rows'])) {
+    $stats['total'] = count($preview['rows']);
+    foreach ($preview['rows'] as $row) {
+        if (!empty($row['errors'])) {
+            $stats['invalid']++;
+            $previewErrors[] = [
+                'line' => $row['line'],
+                'username' => $row['username'],
+                'error' => implode(' ', $row['errors']),
+            ];
+        } else {
+            $stats['valid']++;
         }
     }
-
-    $sql = "SELECT t.code, COALESCE(p.name, '—') AS profile_name, t.imported_at, t.status
-            FROM tickets t
-            LEFT JOIN profiles p ON p.id = t.profile_id";
-    $params = [];
-    if ($statusFilter !== 'all') {
-        $sql .= " WHERE t.status = ?";
-        $params[] = $statusFilter;
+    try {
+        $validUsernames = [];
+        foreach ($preview['rows'] as $row) if (empty($row['errors'])) $validUsernames[] = $row['username'];
+        $existing = hotspot_csv_lookup_existing(ara_db_supabase(), $validUsernames);
+        foreach ($validUsernames as $username) {
+            if (isset($existing[strtolower($username)])) $stats['updated']++; else $stats['new']++;
+        }
+    } catch (Throwable $e) {
+        $previewErrors[] = ['line' => '—', 'username' => '—', 'error' => 'Vérification des utilisateurs existants impossible : ' . $e->getMessage()];
     }
-    $sql .= " ORDER BY t.imported_at DESC LIMIT 300";
-    $stmt = $pdoSupa->prepare($sql);
-    $stmt->execute($params);
-    $tickets = $stmt->fetchAll();
+}
+
+$statusFilter = trim((string)($_GET['status'] ?? 'all'));
+if (!in_array($statusFilter, ['all', 'active', 'disabled'], true)) $statusFilter = 'all';
+
+$users = [];
+$counts = ['all' => 0, 'active' => 0, 'disabled' => 0];
+$dbError = '';
+try {
+    $pdo = ara_db_supabase();
+    $counts['all'] = (int)$pdo->query('SELECT COUNT(*) FROM hotspot_users')->fetchColumn();
+    $counts['disabled'] = (int)$pdo->query("SELECT COUNT(*) FROM hotspot_users WHERE LOWER(disabled) = 'true'")->fetchColumn();
+    $counts['active'] = $counts['all'] - $counts['disabled'];
+
+    $sql = 'SELECT username, profile, comment, disabled, limit_uptime, limit_bytes_total, last_sync FROM hotspot_users';
+    if ($statusFilter === 'disabled') $sql .= " WHERE LOWER(disabled) = 'true'";
+    if ($statusFilter === 'active') $sql .= " WHERE LOWER(disabled) <> 'true' OR disabled IS NULL";
+    $sql .= ' ORDER BY username ASC LIMIT 500';
+    $stmt = $pdo->query($sql);
+    $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
-    $dbError = "Connexion à la base de données impossible : " . $e->getMessage();
+    $dbError = 'Connexion à la base de données impossible : ' . $e->getMessage();
 }
 
 require __DIR__ . '/header.php';
 ?>
-
 <div class="container-fluid mt-4">
-    <h2 class="mb-3">📦 Gestion des Stocks</h2>
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+        <div>
+            <h2 class="mb-1">📦 Inventaire des codes WiFi</h2>
+            <div class="text-muted">Une seule page pour importer et consulter les utilisateurs Hotspot.</div>
+        </div>
+        <a class="btn btn-outline-primary" href="users.php">👥 Gérer les utilisateurs</a>
+    </div>
 
-    <?php if (!empty($_SESSION['flash_success'])): ?>
-        <div class="alert alert-success alert-dismissible fade show">
-            <?= htmlspecialchars($_SESSION['flash_success']) ?>
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    <?php if ($error): ?><div class="alert alert-danger"><?= htmlspecialchars($error) ?></div><?php endif; ?>
+
+    <?php if ($report): ?>
+        <div class="alert alert-success"><strong>Import terminé.</strong> Les utilisateurs valides sont enregistrés dans Supabase et les commandes MikroTik sont en file d’attente.</div>
+        <div class="row g-3 mb-3">
+            <?php foreach ([['Total',$report['total'],'primary'],['Valides',$report['valid'],'success'],['Invalides',$report['invalid'],'danger'],['Nouveaux',$report['new'],'info'],['Mis à jour',$report['updated'],'warning'],['Commandes',count($report['commands'] ?? []),'secondary']] as $kpi): ?>
+                <div class="col-6 col-md-2"><div class="card card-custom p-3 text-center"><div class="h3 mb-0 text-<?= $kpi[2] ?>"><?= (int)$kpi[1] ?></div><small class="text-muted"><?= htmlspecialchars($kpi[0]) ?></small></div></div>
+            <?php endforeach; ?>
         </div>
-        <?php unset($_SESSION['flash_success']); ?>
-    <?php endif; ?>
-    <?php if (!empty($_SESSION['flash_error'])): ?>
-        <div class="alert alert-danger alert-dismissible fade show">
-            <?= htmlspecialchars($_SESSION['flash_error']) ?>
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        <?php if (!empty($report['errors'])): ?><div class="card card-custom mb-3"><div class="card-header card-header-custom">Lignes rejetées</div><div class="card-body p-0"><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Ligne</th><th>Username</th><th>Erreur</th></tr></thead><tbody><?php foreach ($report['errors'] as $err): ?><tr><td><?= htmlspecialchars((string)$err['line']) ?></td><td><?= htmlspecialchars((string)$err['username']) ?></td><td><?= htmlspecialchars((string)$err['error']) ?></td></tr><?php endforeach; ?></tbody></table></div></div></div><?php endif; ?>
+        <div class="alert alert-info">Les commandes sont initialement <strong>PENDING</strong> et passent à <strong>EXECUTED</strong> après ACK du worker MikroTik.</div>
+    <?php elseif ($preview): ?>
+        <div class="card card-custom mb-3">
+            <div class="card-header card-header-custom">Prévisualisation — <?= htmlspecialchars((string)($preview['source_name'] ?? 'CSV')) ?></div>
+            <div class="card-body">
+                <?php if (!empty($preview['unknown_headers'])): ?><div class="alert alert-warning">Colonnes supplémentaires ignorées : <?= htmlspecialchars(implode(', ', $preview['unknown_headers'])) ?></div><?php endif; ?>
+                <div class="row g-3 mb-3">
+                    <?php foreach ([['Total',$stats['total']],['Valides',$stats['valid']],['Invalides',$stats['invalid']],['Nouveaux',$stats['new']],['Existants',$stats['updated']]] as $kpi): ?><div class="col-6 col-md"><div class="border rounded p-3 text-center"><div class="h4 mb-0"><?= (int)$kpi[1] ?></div><small class="text-muted"><?= htmlspecialchars($kpi[0]) ?></small></div></div><?php endforeach; ?>
+                </div>
+                <?php if ($previewErrors): ?><div class="alert alert-danger"><strong>Le fichier contient des lignes invalides.</strong> Elles ne seront pas importées.</div><div class="table-responsive mb-3"><table class="table table-sm table-bordered"><thead><tr><th>Ligne</th><th>Username</th><th>Erreur</th></tr></thead><tbody><?php foreach ($previewErrors as $err): ?><tr><td><?= htmlspecialchars((string)$err['line']) ?></td><td><?= htmlspecialchars((string)$err['username']) ?></td><td><?= htmlspecialchars((string)$err['error']) ?></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?>
+                <p class="text-muted">Les mots de passe sont masqués et ne sont jamais affichés dans le rapport.</p>
+                <div class="table-responsive" style="max-height:420px"><table class="table table-sm table-hover"><thead class="table-light"><tr><th>Ligne</th><th>Username</th><th>Password</th><th>Profile</th><th>Time Limit</th><th>Data Limit</th><th>Comment</th><th>État</th></tr></thead><tbody><?php foreach ($preview['rows'] as $row): ?><tr><td><?= (int)$row['line'] ?></td><td><?= htmlspecialchars((string)$row['username']) ?></td><td>********</td><td><?= htmlspecialchars((string)$row['profile']) ?></td><td><?= htmlspecialchars((string)$row['time_limit']) ?></td><td><?= htmlspecialchars($row['data_limit'] === null ? '' : (string)$row['data_limit']) ?></td><td><?= htmlspecialchars((string)$row['comment']) ?></td><td><?= empty($row['errors']) ? '<span class="badge bg-success">Valide</span>' : '<span class="badge bg-danger">Rejetée</span>' ?></td></tr><?php endforeach; ?></tbody></table></div>
+                <form method="post" class="d-flex gap-2 mt-3"><input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>"><button class="btn btn-success" name="action" value="confirm" <?= $stats['valid'] === 0 ? 'disabled' : '' ?>>✓ Confirmer l’import des <?= (int)$stats['valid'] ?> lignes valides</button><button class="btn btn-outline-secondary" name="action" value="cancel">Annuler</button></form>
+            </div>
         </div>
-        <?php unset($_SESSION['flash_error']); ?>
+    <?php else: ?>
+        <div class="card card-custom mb-3">
+            <div class="card-header card-header-custom"><i class="bi bi-upload"></i> Importer des codes WiFi</div>
+            <div class="card-body">
+                <form method="post" action="inventory.php" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="preview">
+                    <div class="mb-3"><label class="form-label fw-semibold">Fichier CSV exporté depuis Mikhmon</label><input type="file" class="form-control" name="csv_file" accept=".csv,text/csv" required></div>
+                    <div class="alert alert-light border"><strong>En-tête attendu :</strong><br><code>Username, Password, Profile, Time Limit, Data Limit, Comment</code><br><small>UTF-8 ou UTF-8 BOM · séparateur <code>,</code> ou <code>;</code> · maximum 2 MiB et <?= HOTSPOT_CSV_MAX_ROWS ?> lignes.</small></div>
+                    <button class="btn btn-orange" type="submit"><i class="bi bi-search"></i> Valider et prévisualiser</button>
+                </form>
+            </div>
+        </div>
     <?php endif; ?>
-    <?php if ($dbError): ?>
-        <div class="alert alert-danger"><?= htmlspecialchars($dbError) ?></div>
-    <?php endif; ?>
+
+    <div class="row g-3 mb-3">
+        <div class="col-md-4"><div class="card card-custom text-center p-3"><div class="h3 mb-0"><?= $counts['all'] ?></div><small class="text-muted">Tous les codes</small></div></div>
+        <div class="col-md-4"><div class="card card-custom text-center p-3"><div class="h3 text-success mb-0"><?= $counts['active'] ?></div><small class="text-muted">Actifs</small></div></div>
+        <div class="col-md-4"><div class="card card-custom text-center p-3"><div class="h3 text-secondary mb-0"><?= $counts['disabled'] ?></div><small class="text-muted">Désactivés</small></div></div>
+    </div>
+
+    <?php if ($dbError): ?><div class="alert alert-danger"><?= htmlspecialchars($dbError) ?></div><?php endif; ?>
 
     <div class="card card-custom">
-        <div class="card-header card-header-custom"><i class="bi bi-upload"></i> Importer des codes WiFi</div>
-        <div class="card-body">
-            <form method="post" action="inventory.php" enctype="multipart/form-data" class="row g-2 align-items-end">
-                <input type="hidden" name="action" value="import_csv">
-                <div class="col-md-6">
-                    <label class="form-label">Fichier CSV (export Mikhmon)</label>
-                    <input type="file" class="form-control" name="csv_file" accept=".csv,text/csv" required>
-                </div>
-                <div class="col-md-3">
-                    <button type="submit" class="btn btn-orange w-100"><i class="bi bi-file-earmark-arrow-up"></i> Importer les codes</button>
-                </div>
-            </form>
-            <div class="form-text mt-2">CSV uniquement, 1 MiB maximum. Le fichier doit contenir une colonne <code>code</code> (ou <code>username</code>) et une colonne <code>profile</code>.</div>
-        </div>
-    </div>
-
-    <div class="row mt-3">
-        <div class="col-md-4"><div class="card card-custom text-center p-3"><div class="stat-value text-success"><?= $counts['Disponible'] ?></div><div class="stat-label">🟢 Tickets disponibles</div></div></div>
-        <div class="col-md-4"><div class="card card-custom text-center p-3"><div class="stat-value text-danger"><?= $counts['Vendu'] ?></div><div class="stat-label">🔴 Tickets vendus</div></div></div>
-        <div class="col-md-4"><div class="card card-custom text-center p-3"><div class="stat-value text-secondary"><?= $counts['Expiré'] ?></div><div class="stat-label">⚪ Tickets expirés</div></div></div>
-    </div>
-
-    <div class="card card-custom mt-3">
         <div class="card-header card-header-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
-            <span><i class="bi bi-ticket-perforated"></i> Répertoire des tickets</span>
-            <ul class="nav nav-pills" id="statusTabs">
-                <li class="nav-item"><a class="nav-link <?= $statusFilter === 'all' ? 'active' : '' ?>" href="inventory.php">Tous</a></li>
-                <li class="nav-item"><a class="nav-link <?= $statusFilter === 'Disponible' ? 'active' : '' ?>" href="inventory.php?status=Disponible">🟢 Disponible</a></li>
-                <li class="nav-item"><a class="nav-link <?= $statusFilter === 'Vendu' ? 'active' : '' ?>" href="inventory.php?status=Vendu">🔴 Vendu</a></li>
-                <li class="nav-item"><a class="nav-link <?= $statusFilter === 'Expiré' ? 'active' : '' ?>" href="inventory.php?status=Expiré">⚪ Expiré</a></li>
-            </ul>
+            <span>📋 Codes WiFi importés</span>
+            <div class="btn-group btn-group-sm">
+                <a class="btn <?= $statusFilter === 'all' ? 'btn-primary' : 'btn-outline-primary' ?>" href="inventory.php">Tous</a>
+                <a class="btn <?= $statusFilter === 'active' ? 'btn-success' : 'btn-outline-success' ?>" href="inventory.php?status=active">Actifs</a>
+                <a class="btn <?= $statusFilter === 'disabled' ? 'btn-secondary' : 'btn-outline-secondary' ?>" href="inventory.php?status=disabled">Désactivés</a>
+            </div>
         </div>
-        <div class="card-body p-0"><div class="table-responsive"><table class="table table-striped mb-0">
-            <thead class="table-dark"><tr><th>Code WiFi</th><th>Profil</th><th>Date d'import</th><th>Statut</th></tr></thead>
-            <tbody>
-            <?php if (empty($tickets)): ?>
-                <tr><td colspan="4" class="text-center text-muted">Aucun ticket trouvé.</td></tr>
-            <?php else: ?>
-                <?php foreach ($tickets as $t): $meta = $statusMeta[$t['status']] ?? ['badge' => 'light', 'dot' => '']; ?>
-                <tr><td><code><?= htmlspecialchars($t['code']) ?></code></td><td><?= htmlspecialchars($t['profile_name']) ?></td><td><?= htmlspecialchars((string)$t['imported_at']) ?></td><td><span class="badge bg-<?= $meta['badge'] ?>"><?= $meta['dot'] ?> <?= htmlspecialchars($t['status']) ?></span></td></tr>
-                <?php endforeach; ?>
-            <?php endif; ?>
-            </tbody>
-        </table></div></div>
+        <div class="card-body p-0"><div class="table-responsive"><table class="table table-striped table-hover mb-0"><thead class="table-dark"><tr><th>Username</th><th>Profile</th><th>Time Limit</th><th>Data Limit</th><th>Comment</th><th>Statut</th><th>Dernière synchro</th></tr></thead><tbody>
+        <?php if (!$users): ?><tr><td colspan="7" class="text-center text-muted py-4">Aucun code WiFi trouvé.</td></tr><?php else: foreach ($users as $user): $disabled = strtolower((string)$user['disabled']) === 'true'; ?><tr><td><code><?= htmlspecialchars((string)$user['username']) ?></code></td><td><?= htmlspecialchars((string)($user['profile'] ?? '')) ?></td><td><?= htmlspecialchars((string)($user['limit_uptime'] ?? '')) ?></td><td><?= htmlspecialchars((string)($user['limit_bytes_total'] ?? '')) ?></td><td><?= htmlspecialchars((string)($user['comment'] ?? '')) ?></td><td><span class="badge bg-<?= $disabled ? 'secondary' : 'success' ?>"><?= $disabled ? 'Désactivé' : 'Actif' ?></span></td><td><?= htmlspecialchars((string)($user['last_sync'] ?? '—')) ?></td></tr><?php endforeach; endif; ?>
+        </tbody></table></div></div>
     </div>
 
     <a href="index.php" class="btn btn-outline-secondary mt-3"><i class="bi bi-arrow-left"></i> Retour au tableau de bord</a>
 </div>
-
-<style>
-#statusTabs .nav-link { color: var(--bleu-nuit); border-radius: 20px; padding: 0.3rem 0.9rem; font-size: 0.85rem; }
-#statusTabs .nav-link.active { background: var(--orange); color: #fff; }
-</style>
-
 </body>
 </html>
