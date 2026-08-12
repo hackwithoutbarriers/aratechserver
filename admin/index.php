@@ -4,24 +4,9 @@ require __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
 $config = require __DIR__ . '/../config.php';
 
-$pdo = ara_db($config);
-$pdo->exec("CREATE TABLE IF NOT EXISTS hotspot_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    snapshot_date TEXT NOT NULL,
-    snapshot_time TEXT NOT NULL,
-    active_count INTEGER NOT NULL,
-    users_blob TEXT,
-    received_at TEXT NOT NULL
-)");
-
-// Restaurer depuis Supabase si la locale est vide (dernier snapshot)
-restore_from_turso_if_empty(
-    $pdo, $config,
-    'hotspot_snapshots',
-    'SELECT snapshot_date, snapshot_time, active_count, users_blob, received_at FROM hotspot_snapshots ORDER BY id DESC LIMIT 1',
-    [],
-    'INSERT INTO hotspot_snapshots (snapshot_date, snapshot_time, active_count, users_blob, received_at) VALUES (?, ?, ?, ?, ?)'
-);
+// Supabase/PostgreSQL is the sole application datastore. The hotspot_snapshots
+// table is provisioned by database/migrations/006_hotspot_snapshots.sql.
+$pdo = ara_db_supabase();
 
 $adminToken = $config['admin']['token'] ?? getenv('ADMIN_TOKEN');
 
@@ -186,7 +171,7 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch(url)
             .then(response => response.json())
             .then(data => {
-                if (!data.success) throw new Error(data.message || 'Erreur inconnue');
+                if (!data.success) throw new Error(data.message || data.error?.message || 'Erreur inconnue');
                 updateKPIs(data.kpis);
                 updateChart(data.revenue_chart);
                 updateRecentSales(data.recent_sales);
