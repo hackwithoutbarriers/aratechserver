@@ -10,7 +10,7 @@ session_set_cookie_params([
 ]);
 session_start();
 
-require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../../config.php';
 
 // Rediriger vers login si non connecté ou si session expirée
 if (empty($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
@@ -19,9 +19,9 @@ if (empty($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
 }
 
 // Régénérer l'ID de session périodiquement pour éviter la fixation
-if (!isset($_SESSION['regenerated'])) {
-    session_regenerate_id(true);
-    $_SESSION['regenerated'] = time();
+if (empty($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+    header('Location: login.php');
+    exit;
 } elseif (time() - $_SESSION['regenerated'] > 300) {
     session_regenerate_id(true);
     $_SESSION['regenerated'] = time();

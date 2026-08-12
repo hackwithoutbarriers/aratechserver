@@ -130,7 +130,7 @@
     </a>
 
     <div>
-        <a href="admin/" class="admin-link">Accès administration</a>
+<a href="admin/dashboard/" class="admin-link">Accès administration</a>
     </div>
 
     <footer>
