@@ -32,10 +32,21 @@
     :local ok false
     :local msg "failed"
 
+    :local isProfileAction (($action = "profile-create") || ($action = "profile-update") || ($action = "profile-delete"))
+
     :do {
-        :if (($action != "create") && ($action != "update") && ($action != "enable") && ($action != "disable") && ($action != "delete")) do={ :error "unknown action" }
+        :if (($action != "create") && ($action != "update") && ($action != "enable") && ($action != "disable") && ($action != "delete") \
+            && ($action != "profile-create") && ($action != "profile-update") && ($action != "profile-delete") && ($action != "disconnect")) do={ :error "unknown action" }
         :if ([:typeof $username] = "nothing" || [:len $username] = 0) do={ :error "username required" }
-        :local ids [/ip hotspot user find where name=$username]
+
+        # Pour les actions "profile-*", $username contient en réalité le NOM
+        # DU PROFIL (identifiant générique réutilisé côté Supabase, voir
+        # api.php). On ne recherche donc un utilisateur hotspot que pour les
+        # actions qui ciblent réellement un utilisateur.
+        :local ids ({})
+        :if (!$isProfileAction && ($action != "disconnect")) do={
+            :set ids [/ip hotspot user find where name=$username]
+        }
 
         :if ($action = "create") do={
             :local password ($payload->"password")
@@ -115,6 +126,64 @@
             } else={
                 /ip hotspot user remove [:pick $ids 0]
                 :set ok true; :set msg "deleted"
+            }
+        }
+
+        # -------------------------------------------------------------
+        # Extension "Profils + Déconnexion" (routeur derrière CGNAT :
+        # exécutées ici en pull, jamais en connexion entrante Render->routeur)
+        # -------------------------------------------------------------
+        :if ($action = "profile-create") do={
+            :local pids [/ip hotspot user profile find where name=$username]
+            :if ([:len $pids] > 0) do={
+                :set ok true; :set msg "already exists"
+            } else={
+                /ip hotspot user profile add name=$username
+                :local pid [/ip hotspot user profile find where name=$username]
+                :local sharedUsers ($payload->"shared_users")
+                :local rateLimit ($payload->"rate_limit")
+                :local onLogin ($payload->"on_login")
+                :local addressPool ($payload->"address_pool")
+                :if ([:typeof $sharedUsers] != "nothing" && [:len [:tostr $sharedUsers]] > 0) do={ /ip hotspot user profile set $pid shared-users=$sharedUsers }
+                :if ([:typeof $rateLimit] != "nothing" && [:len $rateLimit] > 0) do={ /ip hotspot user profile set $pid rate-limit=$rateLimit }
+                :if ([:typeof $onLogin] != "nothing" && [:len $onLogin] > 0) do={ /ip hotspot user profile set $pid on-login=$onLogin }
+                :if ([:typeof $addressPool] != "nothing" && [:len $addressPool] > 0) do={ /ip hotspot user profile set $pid address-pool=$addressPool }
+                :set ok true; :set msg "created"
+            }
+        }
+
+        :if ($action = "profile-update") do={
+            :local pids [/ip hotspot user profile find where name=$username]
+            :if ([:len $pids] = 0) do={ :error "profile not found" }
+            :local pid [:pick $pids 0]
+            :local sharedUsers ($payload->"shared_users")
+            :local rateLimit ($payload->"rate_limit")
+            :local onLogin ($payload->"on_login")
+            :local addressPool ($payload->"address_pool")
+            :if ([:typeof $sharedUsers] != "nothing" && [:len [:tostr $sharedUsers]] > 0) do={ /ip hotspot user profile set $pid shared-users=$sharedUsers }
+            :if ([:typeof $rateLimit] != "nothing") do={ /ip hotspot user profile set $pid rate-limit=$rateLimit }
+            :if ([:typeof $onLogin] != "nothing") do={ /ip hotspot user profile set $pid on-login=$onLogin }
+            :if ([:typeof $addressPool] != "nothing") do={ /ip hotspot user profile set $pid address-pool=$addressPool }
+            :set ok true; :set msg "updated"
+        }
+
+        :if ($action = "profile-delete") do={
+            :local pids [/ip hotspot user profile find where name=$username]
+            :if ([:len $pids] = 0) do={
+                :set ok true; :set msg "already absent"
+            } else={
+                /ip hotspot user profile remove [:pick $pids 0]
+                :set ok true; :set msg "deleted"
+            }
+        }
+
+        :if ($action = "disconnect") do={
+            :local sids [/ip hotspot active find where user=$username]
+            :if ([:len $sids] = 0) do={
+                :set ok true; :set msg "already offline"
+            } else={
+                /ip hotspot active remove [:pick $sids 0]
+                :set ok true; :set msg "disconnected"
             }
         }
     } on-error={
