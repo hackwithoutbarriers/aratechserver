@@ -1,319 +1,161 @@
 <?php
-/**
- * ARA Tech / ARA Shop - Gestion Financière
- * Version Dynamique liée à Supabase (PostgreSQL)
- */
+declare(strict_types=1);
+require __DIR__ . '/auth.php';
+$config = require __DIR__ . '/../config.php';
 
-require_once '../config.php';
-require_once 'auth.php';
+$pageTitle = 'Finances - ARA Tech WiFi';
 
-// Protection stricte de la session admin
-requireAdmin();
+// ============================================================
+// DONNÉES STATIQUES (MOCK) — à remplacer par l'appel API/DB
+// à l'étape suivante (liaison Backend + Supabase).
+// ============================================================
+$periode = $_GET['periode'] ?? 'mois_courant';
 
-// Récupération de la période (par défaut le mois en cours)
-$filter = isset($_GET['period']) ? $_GET['period'] : 'current_month';
+$expenses = [
+    ['date' => '2026-08-08', 'description' => 'Recharge Internet CanalBox', 'category' => 'Internet',    'amount' => 15000],
+    ['date' => '2026-08-06', 'description' => 'Achat rallonge électrique',   'category' => 'Matériel',    'amount' => 3500],
+    ['date' => '2026-08-03', 'description' => 'Facture CEET',                'category' => 'Électricité', 'amount' => 8000],
+    ['date' => '2026-08-01', 'description' => 'Loyer local technique',       'category' => 'Loyer',       'amount' => 15000],
+    ['date' => '2026-07-28', 'description' => 'Impression affiches pub',     'category' => 'Autre',       'amount' => 3500],
+];
 
-$startDate = null;
-$endDate = null;
+$totalRecettes = 45000;
+$totalDepenses = array_sum(array_column($expenses, 'amount'));
+$beneficeReel  = $totalRecettes - $totalDepenses;
 
-switch ($filter) {
-    case 'current_month':
-        $startDate = date('Y-m-01 00:00:00');
-        $endDate = date('Y-m-t 23:59:59');
-        break;
-    case 'last_month':
-        $startDate = date('Y-m-01 00:00:00', strtotime('first day of last month'));
-        $endDate = date('Y-m-t 23:59:59', strtotime('last day of last month'));
-        break;
-    case 'global':
-    default:
-        $startDate = '1970-01-01 00:00:00';
-        $endDate = date('Y-m-d H:i:s');
-        break;
-}
+$categoryBadge = [
+    'Internet'    => 'primary',
+    'Électricité' => 'warning',
+    'Matériel'    => 'info',
+    'Loyer'       => 'dark',
+    'Autre'       => 'secondary',
+];
 
-try {
-    // 1. Calcul dynamique des recettes (Chiffre d'Affaires) depuis sales_log
-    $stmtSales = $pdo->prepare("
-        SELECT COALESCE(SUM(price), 0) as total_sales 
-        FROM sales_log 
-        WHERE created_at BETWEEN :start AND :end
-    ");
-    $stmtSales->execute(['start' => $startDate, 'end' => $endDate]);
-    $totalRecettes = (float) $stmtSales->fetch(PDO::FETCH_ASSOC)['total_sales'];
-
-    // 2. Récupération des dépenses réelles depuis la table expenses
-    $stmtExpenses = $pdo->prepare("
-        SELECT id, description, amount, category, created_at 
-        FROM expenses 
-        WHERE created_at BETWEEN :start AND :end 
-        ORDER BY created_at DESC
-    ");
-    $stmtExpenses->execute(['start' => $startDate, 'end' => $endDate]);
-    $expenses = $stmtExpenses->fetchAll(PDO::FETCH_ASSOC);
-
-    // 3. Calcul du total des dépenses
-    $totalDepenses = 0;
-    foreach ($expenses as $exp) {
-        $totalDepenses += (float) $exp['amount'];
-    }
-
-    // 4. Calcul du bénéfice net
-    $beneficeNet = $totalRecettes - $totalDepenses;
-
-} catch (PDOException $e) {
-    die("Erreur de base de données : " . $e->getMessage());
-}
+require __DIR__ . '/header.php';
 ?>
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Finances - ARA Tech</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
-    <style>
-        body { background-color: #f4f6f9; }
-        .card-kpi { border-radius: 12px; transition: transform 0.2s; }
-        .card-kpi:hover { transform: translateY(-3px); }
-    </style>
-</head>
-<body>
 
-<div class="container-fluid py-4">
-    <!-- En-tête -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div>
-            <h1 class="h3 mb-0 text-gray-800">Gestion Financière</h1>
-            <p class="text-muted mb-0">Suivi des recettes du Hotspot et des charges de la boutique</p>
-        </div>
-        
-        <!-- Sélecteur de Période -->
-        <div>
-            <form method="GET" action="" class="d-flex gap-2">
-                <select name="period" class="form-select" onchange="this.form.submit()">
-                    <option value="current_month" <?= $filter === 'current_month' ? 'selected' : '' ?>>Mois en cours</option>
-                    <option value="last_month" <?= $filter === 'last_month' ? 'selected' : '' ?>>Mois dernier</option>
-                    <option value="global" <?= $filter === 'global' ? 'selected' : '' ?>>Toutes les données</option>
-                </select>
+<div class="container-fluid mt-4">
+    <h2 class="mb-3">💰 Dépenses &amp; Bénéfices</h2>
+
+    <!-- Formulaire d'enregistrement des charges -->
+    <div class="card card-custom">
+        <div class="card-header card-header-custom"><i class="bi bi-plus-circle"></i> Enregistrer une dépense</div>
+        <div class="card-body">
+            <form id="expenseForm" class="row g-2 align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label">Description</label>
+                    <input type="text" class="form-control" id="description" name="description" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Catégorie</label>
+                    <select class="form-select" id="category" name="category">
+                        <option value="Internet">Internet</option>
+                        <option value="Électricité">Électricité</option>
+                        <option value="Matériel">Matériel</option>
+                        <option value="Loyer">Loyer</option>
+                        <option value="Autre">Autre</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Montant (FCFA)</label>
+                    <input type="number" class="form-control" id="amount" name="amount" min="0" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Date</label>
+                    <input type="date" class="form-control" id="expense_date" name="expense_date" value="<?= date('Y-m-d') ?>" required>
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-orange w-100"><i class="bi bi-save"></i> Enregistrer la dépense</button>
+                </div>
             </form>
         </div>
     </div>
 
-    <!-- Section KPI -->
-    <div class="row g-3 mb-4">
-        <!-- Recettes -->
+    <!-- Filtre de période -->
+    <form method="get" class="row g-2 align-items-end mt-3 mb-1">
+        <div class="col-md-3">
+            <label class="form-label">Période</label>
+            <select class="form-select" name="periode" onchange="this.form.submit()">
+                <option value="mois_courant" <?= $periode === 'mois_courant' ? 'selected' : '' ?>>Mois en cours</option>
+                <option value="mois_dernier" <?= $periode === 'mois_dernier' ? 'selected' : '' ?>>Mois dernier</option>
+                <option value="global" <?= $periode === 'global' ? 'selected' : '' ?>>Vue globale</option>
+            </select>
+        </div>
+    </form>
+
+    <!-- Indicateurs financiers -->
+    <div class="row mt-2">
         <div class="col-md-4">
-            <div class="card card-kpi bg-success text-white border-0 shadow-sm">
-                <div class="card-body d-flex justify-content-between align-items-center">
-                    <div>
-                        <h6 class="text-uppercase text-white-50 small">Recettes (Ventes Hotspot)</h6>
-                        <h2 class="mb-0 fw-bold"><?= number_format($totalRecettes, 0, ',', ' ') ?> <small>FCFA</small></h2>
-                    </div>
-                    <i class="bi bi-graph-up-arrow fs-1 text-white-50"></i>
-                </div>
+            <div class="card card-custom text-center p-3">
+                <div class="stat-value text-success"><?= number_format($totalRecettes, 0, ',', ' ') ?> FCFA</div>
+                <div class="stat-label">Recettes totales</div>
             </div>
         </div>
-        <!-- Dépenses -->
         <div class="col-md-4">
-            <div class="card card-kpi bg-danger text-white border-0 shadow-sm">
-                <div class="card-body d-flex justify-content-between align-items-center">
-                    <div>
-                        <h6 class="text-uppercase text-white-50 small">Dépenses / Charges</h6>
-                        <h2 class="mb-0 fw-bold" id="kpi-depenses"><?= number_format($totalDepenses, 0, ',', ' ') ?> <small>FCFA</small></h2>
-                    </div>
-                    <i class="bi bi-graph-down-arrow fs-1 text-white-50"></i>
-                </div>
+            <div class="card card-custom text-center p-3">
+                <div class="stat-value text-danger"><?= number_format($totalDepenses, 0, ',', ' ') ?> FCFA</div>
+                <div class="stat-label">Dépenses totales</div>
             </div>
         </div>
-        <!-- Bénéfice Net -->
         <div class="col-md-4">
-            <div class="card card-kpi <?= $beneficeNet >= 0 ? 'bg-primary' : 'bg-warning text-dark' ?> text-white border-0 shadow-sm">
-                <div class="card-body d-flex justify-content-between align-items-center">
-                    <div>
-                        <h6 class="text-uppercase <?= $beneficeNet >= 0 ? 'text-white-50' : 'text-dark-50' ?> small">Bénéfice Net Temporel</h6>
-                        <h2 class="mb-0 fw-bold" id="kpi-benefice"><?= number_format($beneficeNet, 0, ',', ' ') ?> <small>FCFA</small></h2>
-                    </div>
-                    <i class="bi bi-wallet2 fs-1 <?= $beneficeNet >= 0 ? 'text-white-50' : 'text-dark-50' ?>"></i>
-                </div>
+            <div class="card card-custom text-center p-3">
+                <div class="stat-value <?= $beneficeReel >= 0 ? 'text-success' : 'text-danger' ?>"><?= number_format($beneficeReel, 0, ',', ' ') ?> FCFA</div>
+                <div class="stat-label">Bénéfice réel</div>
             </div>
         </div>
     </div>
 
-    <!-- Corps de la page -->
-    <div class="row g-4">
-        <!-- Formulaire d'Ajout de Charge -->
-        <div class="col-lg-4">
-            <div class="card border-0 shadow-sm rounded-3">
-                <div class="card-header bg-white border-0 py-3">
-                    <h5 class="mb-0 fw-bold text-dark"><i class="bi bi-plus-circle me-2 text-primary"></i>Enregistrer une charge</h5>
-                </div>
-                <div class="card-body pt-0">
-                    <form id="form-expense">
-                        <div class="mb-3">
-                            <label class="form-label font-monospace small">Description / Motif</label>
-                            <input type="text" id="exp-description" class="form-control" placeholder="Ex: Achat carburant groupe ou Remplacement câble" required>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label font-monospace small">Montant (FCFA)</label>
-                            <input type="number" id="exp-amount" class="form-control" min="1" placeholder="Ex: 5000" required>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label font-monospace small">Catégorie</label>
-                            <select id="exp-category" class="form-select">
-                                <option value="Infrastructure">Infrastructure / Réseau</option>
-                                <option value="Énergie">Énergie / Électricité</option>
-                                <option value="Marketing">Marketing / Bannières</option>
-                                <option value="Divers">Divers / Imprévus</option>
-                            </select>
-                        </div>
-                        <button type="submit" class="btn btn-primary w-100 py-2 fw-bold shadow-sm">
-                            <i class="bi bi-check-circle me-1"></i> Valider l'écriture
-                        </button>
-                    </form>
-                </div>
-            </div>
-        </div>
-
-        <!-- Liste des écritures de charges -->
-        <div class="col-lg-8">
-            <div class="card border-0 shadow-sm rounded-3">
-                <div class="card-header bg-white border-0 py-3 d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0 fw-bold text-dark"><i class="bi bi-list-task me-2 text-danger"></i>Journal des Charges</h5>
-                    <span class="badge bg-secondary rounded-pill"><?= count($expenses) ?> ligne(s)</span>
-                </div>
-                <div class="table-responsive px-3 pb-3">
-                    <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light font-monospace small">
-                            <tr>
-                                <th>Date</th>
-                                <th>Catégorie</th>
-                                <th>Motif / Libellé</th>
-                                <th class="text-end">Montant</th>
-                                <th class="text-center">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="table-body-expenses">
-                            <?php if (empty($expenses)): ?>
-                                <tr>
-                                    <td colspan="5" class="text-center py-4 text-muted">Aucune dépense enregistrée sur cette période.</td>
-                                </tr>
-                            <?php else: ?>
-                                <?php foreach ($expenses as $expense): ?>
-                                    <tr id="row-<?= $expense['id'] ?>">
-                                        <td class="small text-muted"><?= date('d/m/Y H:i', strtotime($expense['created_at'])) ?></td>
-                                        <td><span class="badge bg-light text-dark border"><?= htmlspecialchars($expense['category']) ?></span></td>
-                                        <td class="fw-semibold text-secondary"><?= htmlspecialchars($expense['description']) ?></td>
-                                        <td class="text-end fw-bold text-danger"><?= number_format($expense['amount'], 0, ',', ' ') ?> F</td>
-                                        <td class="text-center">
-                                            <button class="btn btn-sm btn-link text-danger p-0" onclick="deleteExpense(<?= $expense['id'] ?>, <?= $expense['amount'] ?>)">
-                                                <i class="bi bi-trash3 fs-5"></i>
-                                            </button>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
+    <!-- Historique des dépenses -->
+    <div class="card card-custom mt-3">
+        <div class="card-header card-header-custom"><i class="bi bi-clock-history"></i> Historique des dépenses</div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-striped mb-0" id="expensesTable">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>Date</th>
+                            <th>Description</th>
+                            <th>Catégorie</th>
+                            <th>Montant</th>
+                            <th style="width: 100px">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($expenses as $e): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($e['date']) ?></td>
+                            <td><?= htmlspecialchars($e['description']) ?></td>
+                            <td><span class="badge bg-<?= $categoryBadge[$e['category']] ?? 'secondary' ?>"><?= htmlspecialchars($e['category']) ?></span></td>
+                            <td><?= number_format($e['amount'], 0, ',', ' ') ?> FCFA</td>
+                            <td>
+                                <button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteExpenseRow(this)" title="Supprimer">
+                                    <i class="bi bi-trash"></i> Supprimer
+                                </button>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
+
+    <a href="index.php" class="btn btn-outline-secondary mt-3"><i class="bi bi-arrow-left"></i> Retour au tableau de bord</a>
 </div>
 
 <script>
-// Token d'administration injecté de manière sécurisée depuis la session PHP
-const ADMIN_TOKEN = "<?= $_SESSION['admin_token'] ?? '' ?>";
-let currentRecettes = <?= $totalRecettes ?>;
-let currentDepenses = <?= $totalDepenses ?>;
-
-// Configuration universelle des en-têtes API
-const API_HEADERS = {
-    'Content-Type': 'application/json',
-    'X-Admin-Token': ADMIN_TOKEN
-};
-
-// Fonction utilitaire pour le formatage monétaire monnaie locale
-function formatFCFA(amount) {
-    return new Intl.NumberFormat('fr-FR').format(amount) + ' <small>FCFA</small>';
-}
-
-// Recalculateur dynamique des KPI en local suite à des modifications Javascript/Fetch
-function refreshKPI() {
-    let net = currentRecettes - currentDepenses;
-    document.getElementById('kpi-depenses').innerHTML = formatFCFA(currentDepenses);
-    
-    let netKpiCard = document.getElementById('kpi-benefice');
-    netKpiCard.innerHTML = formatFCFA(net);
-    
-    let parentCard = netKpiCard.closest('.card-kpi');
-    if (net >= 0) {
-        parentCard.className = "card card-kpi bg-primary text-white border-0 shadow-sm";
-    } else {
-        parentCard.className = "card card-kpi bg-warning text-dark border-0 shadow-sm";
-    }
-}
-
-// Soumission asynchrone d'une nouvelle dépense
-document.getElementById('form-expense').addEventListener('submit', async function(e) {
+// Simulation d'enregistrement (frontend uniquement — pas encore de liaison backend)
+document.getElementById('expenseForm').addEventListener('submit', function (e) {
     e.preventDefault();
-    
-    const description = document.getElementById('exp-description').value.trim();
-    const amount = parseFloat(document.getElementById('exp-amount').value);
-    const category = document.getElementById('exp-category').value;
-
-    if(!description || isNaN(amount) || amount <= 0) return;
-
-    try {
-        const response = await fetch('api.php?action=save_expense', {
-            method: 'POST',
-            headers: API_HEADERS,
-            body: JSON.stringify({ description, amount, category })
-        });
-
-        const result = await response.json();
-
-        if (result.success) {
-            // Rechargement léger de la page pour réordonner correctement par date PostgreSQL ou insertion dynamique
-            window.location.reload();
-        } else {
-            alert("Erreur lors de la validation : " + (result.message || "inconnue"));
-        }
-    } catch (err) {
-        console.error(err);
-        alert("Impossible de joindre le serveur API.");
-    }
+    alert('Dépense enregistrée (Simulation d\'enregistrement)');
+    this.reset();
+    document.getElementById('expense_date').value = new Date().toISOString().slice(0, 10);
 });
 
-// Suppression asynchrone d'une charge
-async function deleteExpense(id, amount) {
-    if (!confirm("Voulez-vous vraiment supprimer cette ligne d'écriture comptable ?")) return;
-
-    try {
-        const response = await fetch('api.php?action=delete_expense', {
-            method: 'POST',
-            headers: API_HEADERS,
-            body: JSON.stringify({ id })
-        });
-
-        const result = await response.json();
-
-        if (result.success) {
-            // Suppression visuelle instantanée de la ligne
-            const row = document.getElementById(`row-${id}`);
-            if(row) row.remove();
-            
-            // Ajustement des KPI en temps réel
-            currentDepenses -= amount;
-            refreshKPI();
-        } else {
-            alert("Erreur lors de la suppression : " + (result.message || "inconnue"));
-        }
-    } catch (err) {
-        console.error(err);
-        alert("Erreur réseau lors de la suppression.");
-    }
+// Suppression visuelle d'une ligne (future gestion des erreurs)
+function deleteExpenseRow(btn) {
+    if (!confirm('Confirmer la suppression de cette dépense ?')) return;
+    btn.closest('tr').remove();
 }
 </script>
 
