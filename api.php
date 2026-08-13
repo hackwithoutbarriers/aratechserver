@@ -364,12 +364,43 @@ function hotspot_command_stale_seconds(array $config): int
 
 function hotspot_allowed_actions(): array
 {
-    return ['create', 'update', 'enable', 'disable', 'delete'];
+    return [
+        'create', 'update', 'enable', 'disable', 'delete',
+        // Ajoutées à l'étape "extension de la file asynchrone" : mêmes
+        // transport (pending/claim/ack) et même table hotspot_commands que
+        // les actions utilisateur ci-dessus. 'profile-*' réutilise la
+        // colonne `username` comme identifiant générique de cible (ici le
+        // nom du profil, pas un username hotspot) — voir le commentaire
+        // sur queue_hotspot_command() pour le détail de ce choix.
+        'profile-create', 'profile-update', 'profile-delete',
+        'disconnect',
+    ];
+}
+
+/**
+ * Actions dont la cible est un NOM DE PROFIL (colonne `username` réutilisée
+ * comme identifiant générique) plutôt qu'un vrai username hotspot.
+ */
+function hotspot_profile_actions(): array
+{
+    return ['profile-create', 'profile-update', 'profile-delete'];
 }
 
 function hotspot_validate_command_payload(string $action, array $payload): ?string
 {
     if (!in_array($action, hotspot_allowed_actions(), true)) return 'Action inconnue.';
+
+    if (in_array($action, hotspot_profile_actions(), true)) {
+        $profileName = trim((string)($payload['username'] ?? ''));
+        if (!hotspot_profile_name_valid($profileName)) return 'Nom de profil requis ou invalide.';
+        if ($action === 'profile-create' && trim((string)($payload['rate_limit'] ?? '')) === '') {
+            return 'rate_limit requis pour la création d’un profil.';
+        }
+        return null;
+    }
+
+    // 'disconnect' cible un username hotspot réellement en ligne, comme
+    // 'enable'/'disable'/'delete' : mêmes règles de validation.
     $username = trim((string)($payload['username'] ?? ''));
     if ($username === '' || !hotspot_username_valid($username)) return 'Username requis ou invalide.';
     if ($action === 'create' && (string)($payload['password'] ?? '') === '') return 'Password requis.';
@@ -550,6 +581,68 @@ function apply_hotspot_command_ack(PDO $pdo, string $action, string $username, a
                 $pdo->prepare('DELETE FROM hotspot_expiry WHERE user_id = ?')->execute([$username]);
             } catch (Throwable $e) {}
             break;
+
+        // -------------------------------------------------------------
+        // Extension "Profils + Déconnexion" (file asynchrone) : mêmes
+        // règles que ci-dessus (n'appliquer le miroir Supabase qu'après
+        // ACK positif du routeur, jamais en écriture optimiste avant).
+        // -------------------------------------------------------------
+        case 'profile-create':
+            $pdo->prepare(
+                'INSERT INTO hotspot_profiles (profile_name, shared_users, rate_limit, on_login, address_pool, last_sync)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (profile_name) DO UPDATE SET
+                    shared_users = EXCLUDED.shared_users,
+                    rate_limit   = EXCLUDED.rate_limit,
+                    on_login     = EXCLUDED.on_login,
+                    address_pool = EXCLUDED.address_pool,
+                    last_sync    = EXCLUDED.last_sync'
+            )->execute([
+                $username, // nom du profil (voir hotspot_profile_actions())
+                max(1, (int)($payload['shared_users'] ?? 1)),
+                (string)($payload['rate_limit'] ?? ''),
+                (string)($payload['on_login'] ?? ''),
+                (string)($payload['address_pool'] ?? ''),
+                date('c'),
+            ]);
+            break;
+
+        case 'profile-update':
+            $fields = [];
+            $params = [];
+            if (array_key_exists('shared_users', $payload) && $payload['shared_users'] !== '') {
+                $fields[] = 'shared_users = ?';
+                $params[] = max(1, (int)$payload['shared_users']);
+            }
+            if (array_key_exists('rate_limit', $payload)) {
+                $fields[] = 'rate_limit = ?';
+                $params[] = (string)$payload['rate_limit'];
+            }
+            if (array_key_exists('on_login', $payload)) {
+                $fields[] = 'on_login = ?';
+                $params[] = (string)$payload['on_login'];
+            }
+            if (array_key_exists('address_pool', $payload)) {
+                $fields[] = 'address_pool = ?';
+                $params[] = (string)$payload['address_pool'];
+            }
+            if ($fields) {
+                $params[] = $username; // nom du profil
+                $pdo->prepare('UPDATE hotspot_profiles SET ' . implode(', ', $fields) . ', last_sync = ? WHERE profile_name = ?')
+                    ->execute(array_merge(array_slice($params, 0, -1), [date('c'), $username]));
+            }
+            break;
+
+        case 'profile-delete':
+            $pdo->prepare('DELETE FROM hotspot_profiles WHERE profile_name = ?')->execute([$username]);
+            break;
+
+        case 'disconnect':
+            // Rien à écrire dans le miroir Supabase : la session active ne
+            // vit pas dans une table, elle est déduite du prochain snapshot
+            // poussé par push-hotspot-status.rsc (30s plus tard, l'utilisateur
+            // déconnecté n'y apparaîtra simplement plus).
+            break;
     }
 }
 
@@ -588,6 +681,16 @@ function claim_hotspot_commands(PDO $pdo, array $config, string $routerIdentity)
 function hotspot_username_valid(string $username): bool
 {
     return $username !== '' && strlen($username) <= 64 && preg_match('/^[A-Za-z0-9_.\-]+$/', $username) === 1;
+}
+
+/**
+ * Validation d'un nom de profil MikroTik (distincte de
+ * hotspot_username_valid : les profils RouterOS acceptent couramment des
+ * espaces, ex. "1 Heure", ce qu'un username hotspot n'accepte pas).
+ */
+function hotspot_profile_name_valid(string $profileName): bool
+{
+    return $profileName !== '' && strlen($profileName) <= 64 && preg_match('/^[\p{L}0-9 _.\-]+$/u', $profileName) === 1;
 }
 
 /**
@@ -2586,13 +2689,72 @@ if ($period === 'today' || $period === 'yesterday') {
     case 'hotspot-profile-delete':
         require_admin_token($config);
         require_post_method();
-        // Contrat préparé en H1 uniquement (voir §7/§17 du brief) : la
-        // mutation des profils passe aujourd'hui exclusivement par le
-        // routeur (admin/profiles.php + lib/hotspot.php, cf. audit) et
-        // n'a pas d'équivalent Render→Supabase fiable sans connexion au
-        // routeur (interdite en H1, §19/§23). Implémentation réelle
-        // prévue en phase dédiée "Profils".
-        json_api_error('NOT_IMPLEMENTED', 'Cette fonctionnalité sera disponible dans une prochaine phase.', 501);
+        // Le routeur MikroTik est derrière un CGNAT (voir admin/index.php) :
+        // aucune connexion Render→routeur n'est possible. Cette route passe
+        // donc par la MÊME file asynchrone que les mutations utilisateur
+        // (hotspot_commands + hotspot-command-worker.rsc), avec des actions
+        // dédiées 'profile-create'/'profile-update'/'profile-delete'.
+        $payload = get_request_payload();
+        $profileName = trim((string)($payload['profile_name'] ?? $payload['name'] ?? ''));
+
+        if ($route === 'hotspot-profile-create') {
+            if (!hotspot_profile_name_valid($profileName)) {
+                json_api_error('INVALID_REQUEST', 'Nom de profil manquant ou invalide.', 400);
+            }
+            try {
+                $pdo = ara_db_supabase();
+                if (hotspot_profile_exists($pdo, $profileName, $config) === true) {
+                    json_api_error('PROFILE_ALREADY_EXISTS', 'Ce profil existe déjà.', 409);
+                }
+            } catch (Throwable $e) {
+                ara_log('hotspot-profile-create pré-check error: ' . $e->getMessage(), $config, 'warning');
+            }
+        } else {
+            // update / delete : le profil doit déjà exister dans le miroir.
+            if (!hotspot_profile_name_valid($profileName)) {
+                json_api_error('INVALID_REQUEST', 'Paramètre profile_name manquant ou invalide.', 400);
+            }
+            try {
+                $pdo = ara_db_supabase();
+                if (hotspot_profile_exists($pdo, $profileName, $config) === false) {
+                    json_api_error('PROFILE_NOT_FOUND', 'Profil introuvable.', 404);
+                }
+            } catch (Throwable $e) {
+                ara_log('hotspot-profile-' . $route . ' pré-check error: ' . $e->getMessage(), $config, 'warning');
+            }
+        }
+
+        $commandPayload = [];
+        if ($route === 'hotspot-profile-create' || $route === 'hotspot-profile-update') {
+            if (array_key_exists('shared_users', $payload)) {
+                $commandPayload['shared_users'] = (int)$payload['shared_users'];
+            }
+            if (array_key_exists('rate_limit', $payload)) {
+                $commandPayload['rate_limit'] = trim((string)$payload['rate_limit']);
+            }
+            if (array_key_exists('on_login', $payload)) {
+                $commandPayload['on_login'] = trim((string)$payload['on_login']);
+            }
+            if (array_key_exists('address_pool', $payload)) {
+                $commandPayload['address_pool'] = trim((string)$payload['address_pool']);
+            }
+            if ($route === 'hotspot-profile-create' && trim((string)($commandPayload['rate_limit'] ?? '')) === '') {
+                json_api_error('INVALID_REQUEST', 'rate_limit requis pour la création d’un profil.', 400);
+            }
+        }
+
+        $action = match ($route) {
+            'hotspot-profile-create' => 'profile-create',
+            'hotspot-profile-update' => 'profile-update',
+            default                  => 'profile-delete',
+        };
+
+        $commandId = queue_hotspot_command($config, $action, $profileName, $commandPayload);
+        if ($commandId === null) {
+            json_api_error('COMMAND_QUEUE_FAILED', 'Impossible de mettre la commande en file.', 500);
+        }
+
+        json_api_success(['command_id' => $commandId, 'status' => 'PENDING'], 202);
         break;
 
     case 'hotspot-active':
@@ -2662,12 +2824,30 @@ if ($period === 'today' || $period === 'yesterday') {
     case 'hotspot-session-disconnect':
         require_admin_token($config);
         require_post_method();
-        // Déconnecter une session exige une commande envoyée AU routeur ;
-        // aucune voie Render→192.168.88.1 n'existe (§14/§23 du brief) et
-        // aucun mécanisme de file consommée par le routeur n'est encore
-        // en place (voir queue_hotspot_command / hotspot_commands ci-
-        // dessus, prévu pour une phase ultérieure).
-        json_api_error('NOT_IMPLEMENTED', 'Cette fonctionnalité sera disponible dans une prochaine phase.', 501);
+        // Comme pour les profils : passe par la file asynchrone, exécuté
+        // par hotspot-command-worker.rsc via
+        // /ip hotspot active remove [find user=$username].
+        $payload = get_request_payload();
+        $username = trim((string)($payload['username'] ?? ''));
+        if (!hotspot_username_valid($username)) {
+            json_api_error('INVALID_REQUEST', 'Paramètre username manquant ou invalide.', 400);
+        }
+
+        // Vérification best-effort que la session est bien active
+        // actuellement (issue du dernier snapshot) — n'empêche pas la
+        // commande si l'info est indisponible (UNKNOWN), seulement si on
+        // sait positivement que la session n'est plus active.
+        $onlineSet = hotspot_online_usernames($config);
+        if ($onlineSet !== null && !in_array($username, $onlineSet, true)) {
+            json_api_error('SESSION_NOT_ACTIVE', 'Cette session n’est plus active.', 409);
+        }
+
+        $commandId = queue_hotspot_command($config, 'disconnect', $username, []);
+        if ($commandId === null) {
+            json_api_error('COMMAND_QUEUE_FAILED', 'Impossible de mettre la commande en file.', 500);
+        }
+
+        json_api_success(['command_id' => $commandId, 'status' => 'PENDING'], 202);
         break;
 
     case 'hotspot-vouchers':
