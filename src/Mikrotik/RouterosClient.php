@@ -7,22 +7,27 @@ require_once __DIR__ . '/RouterosApiClient.php';
 /**
  * src/Mikrotik/RouterosClient.php
  * -----------------------------------------------------------------------
+ * @deprecated INJOIGNABLE EN PRODUCTION — NE PAS BRANCHER SUR UNE ROUTE.
+ *
+ * Le test réel a confirmé que le MikroTik est derrière le CGNAT du FAI
+ * (voir le commentaire "CGNAT CanalBox" en tête de admin/index.php).
+ * Aucune connexion TCP entrante Render -> routeur:8728 n'est donc possible,
+ * WireGuard ou pas : ce fichier ne peut plus jouer le rôle prévu à l'étape
+ * précédente. L'architecture retenue est désormais 100% asynchrone,
+ * initiée par le routeur (push HTTPS de mikrotik-scripts/push-hotspot-
+ * status.rsc + file de commandes hotspot_commands consommée en pull par
+ * mikrotik-scripts/hotspot-command-worker.rsc). Voir api.php pour la
+ * logique réelle (queue_hotspot_command, apply_hotspot_command_ack...).
+ *
+ * Ce fichier est conservé (non supprimé) uniquement au cas où
+ * l'architecture réseau changerait un jour (IP publique fixe, relais VPS
+ * avec port forwarding...). Il ne doit être ré-activé qu'après un nouveau
+ * test réseau explicite — ne pas le réintégrer par appel direct depuis une
+ * page admin sans revalider cette hypothèse.
+ * -----------------------------------------------------------------------
  * Couche de connexion applicative vers le routeur MikroTik, en miroir de
  * ara_db_supabase() dans db.php : une factory unique, appelée à la
  * demande, qui retourne un client prêt à l'emploi.
- *
- * Étape actuelle (fondations + squelette visuel) : ce fichier fournit
- * uniquement la connexion et un test de lecture (identity + resource).
- * La logique métier hotspot (createUser, toggleUser, removeExpiredUser...)
- * viendra dans HotspotService.php à une étape ultérieure de la feuille de
- * route, une fois la liaison WireGuard validée en conditions réelles.
- *
- * Contexte réseau : le tunnel WireGuard + l'API RouterOS sont configurés
- * côté routeur, mais cette liaison synchrone Render/local -> routeur n'a
- * encore JAMAIS été testée. C'est exactement le rôle de
- * ara_mikrotik_test_connection() : isoler ce test dans une fonction dédiée,
- * qui échoue proprement (retourne success=false + message) plutôt que de
- * faire planter la page qui l'appelle.
  * -----------------------------------------------------------------------
  */
 
