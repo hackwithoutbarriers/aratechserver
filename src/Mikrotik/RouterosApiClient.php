@@ -2,328 +2,167 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/RouterosApiClient.php';
+
 /**
- * src/Mikrotik/RouterosApiClient.php
+ * src/Mikrotik/RouterosClient.php
  * -----------------------------------------------------------------------
- * Client bas niveau du protocole API RouterOS (port 8728/8729).
+ * @deprecated INJOIGNABLE EN PRODUCTION — NE PAS BRANCHER SUR UNE ROUTE.
  *
- * Origine : adapté de routeros_api.class.php (Denis Basta et contributeurs,
- * déjà présent dans le dépôt mikhmon-server / mikhmon/lib/), renommé
- * `RouterosApiClient` et nettoyé conformément au rapport d'audit (§1 —
- * "la classe vendor, renommée/namespacée"). Le protocole bas niveau
- * (longueur encodée, lecture/écriture de trames, login pré/post v6.43)
- * est identique à l'original ; seul le style a été modernisé
- * (typage strict, suppression du code mort spécifique Smarty
- * `parseResponse4Smarty()` / `arrayChangeKeyName()`, non utilisé ici).
+ * Le test réel a confirmé que le MikroTik est derrière le CGNAT du FAI
+ * (voir le commentaire "CGNAT CanalBox" en tête de admin/index.php).
+ * Aucune connexion TCP entrante Render -> routeur:8728 n'est donc possible,
+ * WireGuard ou pas : ce fichier ne peut plus jouer le rôle prévu à l'étape
+ * précédente. L'architecture retenue est désormais 100% asynchrone,
+ * initiée par le routeur (push HTTPS de mikrotik-scripts/push-hotspot-
+ * status.rsc + file de commandes hotspot_commands consommée en pull par
+ * mikrotik-scripts/hotspot-command-worker.rsc). Voir api.php pour la
+ * logique réelle (queue_hotspot_command, apply_hotspot_command_ack...).
  *
- * Ce fichier ne connaît RIEN de Supabase, de la config de l'application
- * ni de la logique métier hotspot : c'est un client protocole générique,
- * exactement comme PDO l'est pour Postgres. La couche applicative vit
- * dans RouterosClient.php (factory + test de connexion) et, à une étape
- * ultérieure, HotspotService.php (logique métier hotspot).
- *
- * Pas de namespace PHP : le reste du dépôt (db.php, api.php, admin/*)
- * n'utilise ni namespaces ni autoloader Composer (aucun composer.json
- * dans le dépôt) — on reste cohérent avec ce style plutôt que d'introduire
- * une convention isolée pour ce seul fichier.
+ * Ce fichier est conservé (non supprimé) uniquement au cas où
+ * l'architecture réseau changerait un jour (IP publique fixe, relais VPS
+ * avec port forwarding...). Il ne doit être ré-activé qu'après un nouveau
+ * test réseau explicite — ne pas le réintégrer par appel direct depuis une
+ * page admin sans revalider cette hypothèse.
+ * -----------------------------------------------------------------------
+ * Couche de connexion applicative vers le routeur MikroTik, en miroir de
+ * ara_db_supabase() dans db.php : une factory unique, appelée à la
+ * demande, qui retourne un client prêt à l'emploi.
  * -----------------------------------------------------------------------
  */
-class RouterosApiClient
+
+/**
+ * Retourne un client RouterOS connecté, réutilisé pour le reste de la
+ * requête HTTP en cours (pas de persistance entre deux requêtes : voir
+ * §1 "point de vigilance PHP" du rapport d'audit — normal et attendu en
+ * PHP-Apache classique, chaque hit ouvre et referme sa propre connexion).
+ *
+ * @throws RuntimeException si la configuration est incomplète ou si la
+ *                           connexion échoue après $connect_retries tentatives.
+ */
+function ara_mikrotik(array $config): RouterosApiClient
 {
-    /** Affiche les échanges bas niveau sur stdout/error_log si activé. */
-    public bool $debug = false;
+    static $client = null;
+    static $shutdownRegistered = false;
 
-    /** État courant de la connexion. */
-    public bool $connected = false;
-
-    /** Port API RouterOS (8728 en clair, 8729 en SSL/API-SSL). */
-    public int $port = 8728;
-
-    /** Connexion chiffrée (nécessite api-ssl activé côté routeur). */
-    public bool $ssl = false;
-
-    /** Timeout de connexion ET de lecture, en secondes. */
-    public int $timeout = 3;
-
-    /** Nombre de tentatives de connexion avant abandon. */
-    public int $attempts = 2;
-
-    /** Délai entre deux tentatives, en secondes. */
-    public int $delay = 1;
-
-    /** @var resource|closed-resource|null */
-    private $socket;
-
-    public int $error_no = 0;
-    public string $error_str = '';
-
-    /** Vérifie si une valeur peut être parcourue par foreach(). */
-    public function isIterable($var): bool
-    {
-        return $var !== null
-            && (is_array($var)
-                || $var instanceof Traversable);
+    if ($client instanceof RouterosApiClient && $client->connected) {
+        return $client;
     }
 
-    private function debugLog(string $text): void
-    {
-        if ($this->debug) {
-            error_log('[RouterosApiClient] ' . $text);
-        }
+    $mikrotikConfig = $config['mikrotik'] ?? [];
+
+    $host     = trim((string)($mikrotikConfig['host'] ?? ''));
+    $user     = trim((string)($mikrotikConfig['api_user'] ?? ''));
+    $password = (string)($mikrotikConfig['api_password'] ?? '');
+    $port     = (int)($mikrotikConfig['api_port'] ?? 8728);
+    $timeout  = max(1, (int)($mikrotikConfig['connect_timeout'] ?? 2));
+    $attempts = max(1, (int)($mikrotikConfig['connect_retries'] ?? 1));
+
+    if ($host === '' || $user === '') {
+        throw new RuntimeException(
+            'Configuration MikroTik incomplète (MIKROTIK_HOST / MIKROTIK_API_USER manquant(s)).'
+        );
     }
 
-    /**
-     * Encode une longueur de trame selon le protocole API RouterOS
-     * (varint sur 1 à 5 octets). Logique inchangée par rapport à
-     * l'implémentation d'origine.
-     */
-    private function encodeLength(int $length): string
-    {
-        if ($length < 0x80) {
-            return chr($length);
-        }
-        if ($length < 0x4000) {
-            $length |= 0x8000;
-            return chr(($length >> 8) & 0xFF) . chr($length & 0xFF);
-        }
-        if ($length < 0x200000) {
-            $length |= 0xC00000;
-            return chr(($length >> 16) & 0xFF) . chr(($length >> 8) & 0xFF) . chr($length & 0xFF);
-        }
-        if ($length < 0x10000000) {
-            $length |= 0xE0000000;
-            return chr(($length >> 24) & 0xFF) . chr(($length >> 16) & 0xFF)
-                . chr(($length >> 8) & 0xFF) . chr($length & 0xFF);
-        }
-        return chr(0xF0) . chr(($length >> 24) & 0xFF) . chr(($length >> 16) & 0xFF)
-            . chr(($length >> 8) & 0xFF) . chr($length & 0xFF);
+    $client = new RouterosApiClient();
+    $client->port     = $port;
+    $client->timeout  = $timeout;
+    $client->attempts = $attempts;
+    $client->delay    = 1;
+    $client->debug    = false;
+
+    $connected = $client->connect($host, $user, $password);
+
+    if (!$connected) {
+        $reason = trim($client->error_str) !== ''
+            ? $client->error_str
+            : 'connexion refusée ou délai dépassé (identifiants invalides, API désactivée, ou routeur injoignable via le tunnel WireGuard).';
+        $client = null;
+
+        throw new RuntimeException("Connexion MikroTik impossible ($host:$port) : $reason");
     }
 
-    /**
-     * Établit la connexion et s'authentifie auprès du routeur.
-     * Gère le login pré-v6.43 (challenge MD5) et post-v6.43 (plain).
-     */
-    public function connect(string $ip, string $login, string $password): bool
-    {
-        for ($attempt = 1; $attempt <= $this->attempts; $attempt++) {
-            $this->connected = false;
-            $protocol = $this->ssl ? 'ssl://' : '';
-            $context = stream_context_create([
-                'ssl' => ['ciphers' => 'ADH:ALL', 'verify_peer' => false, 'verify_peer_name' => false],
-            ]);
-
-            $this->debugLog("Tentative #$attempt vers $protocol$ip:$this->port ...");
-
-            $this->socket = @stream_socket_client(
-                $protocol . $ip . ':' . $this->port,
-                $this->error_no,
-                $this->error_str,
-                $this->timeout,
-                STREAM_CLIENT_CONNECT,
-                $context
-            );
-
-            if ($this->socket) {
-                stream_set_timeout($this->socket, $this->timeout);
-
-                $this->write('/login', false);
-                $this->write('=name=' . $login, false);
-                $this->write('=password=' . $password);
-                $response = $this->read(false);
-
-                if (isset($response[0]) && $response[0] === '!done') {
-                    if (!isset($response[1])) {
-                        // Login post-v6.43 : déjà authentifié.
-                        $this->connected = true;
-                        break;
-                    }
-
-                    // Login pré-v6.43 : challenge MD5.
-                    $matches = [];
-                    if (preg_match_all('/[^=]+/i', $response[1], $matches)
-                        && ($matches[0][0] ?? '') === 'ret'
-                        && strlen($matches[0][1] ?? '') === 32
-                    ) {
-                        $this->write('/login', false);
-                        $this->write('=name=' . $login, false);
-                        $this->write('=response=00' . md5(chr(0) . $password . pack('H*', $matches[0][1])));
-                        $response = $this->read(false);
-                        if (isset($response[0]) && $response[0] === '!done') {
-                            $this->connected = true;
-                            break;
-                        }
-                    }
-                }
-
-                fclose($this->socket);
+    if (!$shutdownRegistered) {
+        // Pas de connexion persistante entre requêtes en PHP-Apache/FPM
+        // classique : on referme proprement en fin de script plutôt que
+        // de compter sur le garbage collector.
+        register_shutdown_function(static function () use (&$client): void {
+            if ($client instanceof RouterosApiClient && $client->connected) {
+                $client->disconnect();
             }
-
-            if ($attempt < $this->attempts) {
-                sleep($this->delay);
-            }
-        }
-
-        $this->debugLog($this->connected ? 'Connecté.' : 'Échec de connexion : ' . $this->error_str);
-
-        return $this->connected;
+        });
+        $shutdownRegistered = true;
     }
 
-    /** Ferme proprement la connexion socket si elle est encore ouverte. */
-    public function disconnect(): void
-    {
-        if (is_resource($this->socket)) {
-            fclose($this->socket);
-        }
-        $this->connected = false;
-        $this->debugLog('Déconnecté.');
-    }
+    return $client;
+}
 
-    /** Transforme la réponse brute (!re/!done/!trap...) en tableau exploitable. */
-    public function parseResponse(array $response): array
-    {
-        $parsed = [];
-        $current = null;
-        $singleValue = null;
+/**
+ * Test de liaison synchrone Render/local -> routeur, en LECTURE SEULE
+ * (/system/identity/print + /system/resource/print). Ne modifie jamais
+ * rien sur le routeur.
+ *
+ * Ne lève jamais d'exception : toute erreur (config manquante, WireGuard
+ * down, identifiants API invalides, timeout...) est capturée et retournée
+ * dans le tableau de résultat, pour que l'appelant (le Dashboard, plus
+ * tard une route API) puisse afficher un état clair sans planter la page.
+ *
+ * @return array{
+ *   success: bool,
+ *   host: string|null,
+ *   port: int|null,
+ *   latency_ms: int,
+ *   data?: array{
+ *     identity: string|null,
+ *     version: string|null,
+ *     board_name: string|null,
+ *     architecture: string|null,
+ *     cpu_load: int|null,
+ *     uptime: string|null,
+ *     free_memory: int|null,
+ *     total_memory: int|null,
+ *   },
+ *   error?: string,
+ * }
+ */
+function ara_mikrotik_test_connection(array $config): array
+{
+    $startedAt = microtime(true);
+    $host = $config['mikrotik']['host'] ?? null;
+    $port = isset($config['mikrotik']['api_port']) ? (int)$config['mikrotik']['api_port'] : null;
 
-        foreach ($response as $x) {
-            if (in_array($x, ['!fatal', '!re', '!trap'], true)) {
-                if ($x === '!re') {
-                    $parsed[] = [];
-                    $current = &$parsed[array_key_last($parsed)];
-                } else {
-                    $parsed[$x][] = [];
-                    $current = &$parsed[$x][array_key_last($parsed[$x])];
-                }
-            } elseif ($x !== '!done') {
-                $matches = [];
-                if (preg_match_all('/[^=]+/i', $x, $matches)) {
-                    if (($matches[0][0] ?? '') === 'ret') {
-                        $singleValue = $matches[0][1] ?? '';
-                    }
-                    $current[$matches[0][0]] = $matches[0][1] ?? '';
-                }
-            }
-        }
+    try {
+        $api = ara_mikrotik($config);
 
-        if (empty($parsed) && $singleValue !== null) {
-            return [$singleValue];
-        }
+        $identity = $api->comm('/system/identity/print');
+        $resource = $api->comm('/system/resource/print');
+        $res = $resource[0] ?? [];
 
-        return $parsed;
-    }
+        return [
+            'success'    => true,
+            'host'       => $host,
+            'port'       => $port,
+            'latency_ms' => (int)round((microtime(true) - $startedAt) * 1000),
+            'data'       => [
+                'identity'      => $identity[0]['name'] ?? null,
+                'version'       => $res['version'] ?? null,
+                'board_name'    => $res['board-name'] ?? null,
+                'architecture'  => $res['architecture-name'] ?? null,
+                'cpu_load'      => isset($res['cpu-load']) ? (int)$res['cpu-load'] : null,
+                'uptime'        => $res['uptime'] ?? null,
+                'free_memory'   => isset($res['free-memory']) ? (int)$res['free-memory'] : null,
+                'total_memory'  => isset($res['total-memory']) ? (int)$res['total-memory'] : null,
+            ],
+        ];
+    } catch (Throwable $e) {
+        error_log('[MikroTik] Test de connexion échoué : ' . $e->getMessage());
 
-    /** Lit une réponse complète depuis le socket (bloquant jusqu'à !done). */
-    public function read(bool $parse = true): array
-    {
-        $response = [];
-        $receivedDone = false;
-
-        while (true) {
-            $byte = ord(fread($this->socket, 1));
-            $length = 0;
-
-            if ($byte & 128) {
-                if (($byte & 192) === 128) {
-                    $length = (($byte & 63) << 8) + ord(fread($this->socket, 1));
-                } elseif (($byte & 224) === 192) {
-                    $length = (($byte & 31) << 8) + ord(fread($this->socket, 1));
-                    $length = ($length << 8) + ord(fread($this->socket, 1));
-                } elseif (($byte & 240) === 224) {
-                    $length = (($byte & 15) << 8) + ord(fread($this->socket, 1));
-                    $length = ($length << 8) + ord(fread($this->socket, 1));
-                    $length = ($length << 8) + ord(fread($this->socket, 1));
-                } else {
-                    $length = ord(fread($this->socket, 1));
-                    $length = ($length << 8) + ord(fread($this->socket, 1));
-                    $length = ($length << 8) + ord(fread($this->socket, 1));
-                    $length = ($length << 8) + ord(fread($this->socket, 1));
-                }
-            } else {
-                $length = $byte;
-            }
-
-            $chunk = '';
-            if ($length > 0) {
-                $chunk = '';
-                $readLength = 0;
-                while ($readLength < $length) {
-                    $toRead = $length - $readLength;
-                    $chunk .= fread($this->socket, $toRead);
-                    $readLength = strlen($chunk);
-                }
-                $response[] = $chunk;
-            }
-
-            if ($chunk === '!done') {
-                $receivedDone = true;
-            }
-
-            $status = stream_get_meta_data($this->socket);
-            $unreadBytes = $status['unread_bytes'] ?? 0;
-
-            if ((!$this->connected && !$unreadBytes) || ($this->connected && !$unreadBytes && $receivedDone)) {
-                break;
-            }
-        }
-
-        return $parse ? $this->parseResponse($response) : $response;
-    }
-
-    /**
-     * Envoie une commande brute.
-     *
-     * @param bool|int $param2 true = fin de commande immédiate ; false =
-     *                         d'autres lignes suivent ; int = tag de requête.
-     */
-    public function write(string $command, $param2 = true): bool
-    {
-        if ($command === '') {
-            return false;
-        }
-
-        foreach (explode("\n", $command) as $line) {
-            $line = trim($line);
-            fwrite($this->socket, $this->encodeLength(strlen($line)) . $line);
-        }
-
-        if (is_int($param2)) {
-            $tag = '.tag=' . $param2;
-            fwrite($this->socket, $this->encodeLength(strlen($tag)) . $tag . chr(0));
-        } elseif (is_bool($param2)) {
-            fwrite($this->socket, $param2 ? chr(0) : '');
-        }
-
-        return true;
-    }
-
-    /**
-     * Exécute une commande API et attend la réponse complète.
-     * Ex: comm('/system/resource/print') ou
-     *     comm('/ip/hotspot/user/add', ['name' => 'user1', 'password' => 'x'])
-     */
-    public function comm(string $command, array $arguments = []): array
-    {
-        $count = count($arguments);
-        $this->write($command, $count === 0);
-
-        $i = 0;
-        if ($this->isIterable($arguments)) {
-            foreach ($arguments as $key => $value) {
-                $prefix = match ($key[0] ?? '') {
-                    '?' => "$key=$value",
-                    '~' => "$key~$value",
-                    default => "=$key=$value",
-                };
-                $isLast = (++$i === $count);
-                $this->write($prefix, $isLast);
-            }
-        }
-
-        return $this->read();
-    }
-
-    public function __destruct()
-    {
-        $this->disconnect();
+        return [
+            'success'    => false,
+            'host'       => $host,
+            'port'       => $port,
+            'latency_ms' => (int)round((microtime(true) - $startedAt) * 1000),
+            'error'      => $e->getMessage(),
+        ];
     }
 }
