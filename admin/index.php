@@ -189,6 +189,28 @@ $statusLabel = $status === 'ONLINE' ? 'Synchronisation active' : ($status === 'O
                     <span class="status-pill <?= strtolower($status) ?>"><span class="status-dot <?= strtolower($status) ?>"></span><?= htmlspecialchars($statusLabel) ?></span>
                 </div>
 
+                    <?php if ($status === 'ONLINE' && $s): ?>
+                        <div class="alert alert-success d-flex align-items-start gap-2 mb-3">
+                            <i class="bi bi-check-circle-fill fs-5"></i>
+                            <div>
+                                <strong>Le MikroTik est actuellement joignable par son canal de synchronisation.</strong>
+                                <div class="small mt-1">Le routeur pousse son état vers ARA Tech Server ; aucune connexion entrante Render → RouterOS n'est utilisée.</div>
+                            </div>
+                        </div>
+                    <?php elseif ($status === 'OFFLINE' && $s): ?>
+                        <div class="alert alert-warning d-flex align-items-start gap-2 mb-3">
+                            <i class="bi bi-exclamation-triangle-fill fs-5"></i>
+                            <div>
+                                <strong>Le dernier heartbeat du MikroTik est périmé.</strong>
+                                <div class="small mt-1">Vérifie le scheduler et le script <code>push-hotspot-status.rsc</code> sur le routeur.</div>
+                            </div>
+                        </div>
+                    <?php else: ?>
+                        <div class="alert alert-secondary d-flex align-items-start gap-2 mb-3">
+                            <i class="bi bi-question-circle-fill fs-5"></i>
+                            <div><strong>Aucun snapshot exploitable.</strong><div class="small mt-1"><?= htmlspecialchars($routerState['error'] ?? 'Le routeur ne s’est pas encore synchronisé avec le serveur.') ?></div></div>
+                        </div>
+                    <?php endif; ?>
                     <div class="row g-3">
                         <div class="col-6 col-md-3"><div class="stat-label">Identité</div><div class="fw-semibold"><?= htmlspecialchars((string)($s['router_identity'] ?? '—')) ?></div></div>
                         <div class="col-6 col-md-3"><div class="stat-label">Version RouterOS</div><div class="fw-semibold"><?= htmlspecialchars((string)($s['router_version'] ?? '—')) ?></div></div>
