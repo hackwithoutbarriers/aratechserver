@@ -188,15 +188,7 @@ $statusLabel = $status === 'ONLINE' ? 'Synchronisation active' : ($status === 'O
                     <span><i class="bi bi-hdd-network"></i> Statut Réseau — Synchronisation MikroTik</span>
                     <span class="status-pill <?= strtolower($status) ?>"><span class="status-dot <?= strtolower($status) ?>"></span><?= htmlspecialchars($statusLabel) ?></span>
                 </div>
-                <div class="card-body">
-                    <?php if ($status === 'ONLINE' && $s): ?>
-                        <div class="alert alert-success d-flex align-items-start gap-2 mb-3">
-                            <i class="bi bi-check-circle-fill fs-5"></i>
-                            <div>
-                                <strong>Le MikroTik est actuellement joignable par son canal de synchronisation.</strong>
-                                <div class="small mt-1">Le routeur pousse son état vers ARA Tech Server ; aucune connexion entrante Render → RouterOS n'est utilisée.</div>
-                            </div>
-                        </div>
+
                     <?php elseif ($status === 'OFFLINE' && $s): ?>
                         <div class="alert alert-warning d-flex align-items-start gap-2 mb-3">
                             <i class="bi bi-exclamation-triangle-fill fs-5"></i>
