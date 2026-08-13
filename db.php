@@ -29,84 +29,27 @@ function ara_log(string $message, array $config, string $level = 'info'): void
 }
 
 // ---------------------------------------------------------------------
-// Fonctions Turso conservées uniquement pour compatibilité avec certains
-// chemins historiques de l'API. Elles ne constituent plus un stockage local.
+// Turso — nettoyage partiel (restructuration Mikhmon Personnel, étape 1)
+// ---------------------------------------------------------------------
+// turso_pipeline() et turso_rows() (le vrai moteur cURL vers Turso) ont
+// été supprimées : elles n'étaient de toute façon jamais atteintes, car
+// config.php ne définit aucune clé 'turso' (empty($config['turso']['url'])
+// est donc toujours vrai avant même d'y arriver). Code mort confirmé.
+//
+// restore_from_turso_if_empty() est en revanche CONSERVÉE ici, en stub
+// sans effet, uniquement parce que api.php (hors périmètre de cette
+// étape) l'appelle encore dans le repli local de sa route `status`.
+// La supprimer maintenant ferait planter cet appel (fatal error : call
+// to undefined function) tant que api.php n'aura pas été retouché.
+// À supprimer définitivement dès que ce repli sera nettoyé (étape
+// "nettoyage" de la feuille de route, en même temps que api.php).
 // ---------------------------------------------------------------------
 
-function turso_pipeline(array $config, array $stmts): array
-{
-    if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
-        throw new RuntimeException('Turso non configuré.');
-    }
-
-    $url   = rtrim($config['turso']['url'], '/') . '/v2/pipeline';
-    $token = $config['turso']['token'];
-
-    $requests = [];
-    foreach ($stmts as $stmt) {
-        $requests[] = [
-            'type' => 'execute',
-            'stmt' => [
-                'sql'  => $stmt['sql'],
-                'args' => array_map(
-                    static fn($v) => ['type' => 'text', 'value' => (string)$v],
-                    $stmt['args'] ?? []
-                ),
-            ],
-        ];
-    }
-    $requests[] = ['type' => 'close'];
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_POSTFIELDS     => json_encode(['requests' => $requests]),
-        CURLOPT_HTTPHEADER     => [
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . $token,
-        ],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 10,
-    ]);
-
-    $raw  = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err  = curl_error($ch);
-    curl_close($ch);
-
-    if ($raw === false) {
-        throw new RuntimeException("Turso injoignable (cURL: $err).");
-    }
-
-    $decoded = json_decode($raw, true);
-    if (!is_array($decoded)) {
-        throw new RuntimeException("Réponse Turso invalide (HTTP $code).");
-    }
-
-    foreach ($decoded['results'] ?? [] as $result) {
-        if (($result['type'] ?? '') === 'error') {
-            throw new RuntimeException('Turso SQL: ' . ($result['error']['message'] ?? 'erreur inconnue'));
-        }
-    }
-
-    return $decoded['results'] ?? [];
-}
-
-function turso_rows(array $result): array
-{
-    $response = $result['response']['result'] ?? [];
-    $cols     = array_column($response['cols'] ?? [], 'name');
-    $rows     = [];
-    foreach ($response['rows'] ?? [] as $row) {
-        $assoc = [];
-        foreach ($row as $i => $cell) {
-            $assoc[$cols[$i]] = $cell['value'] ?? null;
-        }
-        $rows[] = $assoc;
-    }
-    return $rows;
-}
-
+/**
+ * @deprecated Stub de compatibilité, ne fait plus rien. Conservé
+ *             uniquement tant que api.php l'appelle encore. Toujours
+ *             sans effet : aucune clé 'turso' n'existe dans config.php.
+ */
 function restore_from_turso_if_empty(
     PDO $pdo,
     array $config,
@@ -115,37 +58,7 @@ function restore_from_turso_if_empty(
     array $tursoArgs,
     string $insertLocalSQL
 ): bool {
-    // This is retained only for legacy compatibility. $pdo is Supabase now,
-    // so no local database is created or populated by this function.
-    $stmt = $pdo->query("SELECT COUNT(*) FROM $table");
-    if ((int)$stmt->fetchColumn() > 0) {
-        return false;
-    }
-
-    if (empty($config['turso']['url']) || empty($config['turso']['token'])) {
-        return false;
-    }
-
-    try {
-        $results = turso_pipeline($config, [[
-            'sql'  => $tursoQuery,
-            'args' => $tursoArgs,
-        ]]);
-        $rows = [];
-        foreach ($results as $r) {
-            if (!empty($r['response']['result']['cols'])) {
-                $rows = turso_rows($r);
-                break;
-            }
-        }
-        foreach ($rows as $row) {
-            $insert = $pdo->prepare($insertLocalSQL);
-            $insert->execute(array_values($row));
-        }
-        return !empty($rows);
-    } catch (Throwable $e) {
-        return false;
-    }
+    return false;
 }
 
 /**
