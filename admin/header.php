@@ -1,83 +1,126 @@
 <?php
 declare(strict_types=1);
-// Ce fichier doit être inclus après auth.php et après avoir défini $pageTitle si nécessaire.
+
+/**
+ * ARA Tech Admin — shared layout header.
+ * Auth is centralized here.
+ */
+require_once __DIR__ . '/../auth.php';
+
+$currentPage = basename((string)($_SERVER['PHP_SELF'] ?? ''));
+$pageTitle = $pageTitle ?? 'ARA Tech WiFi Admin';
+
+$navItems = [
+    'index.php'     => ['label' => 'Dashboard',        'icon' => 'bi-speedometer2'],
+    'status.php'    => ['label' => 'Statut détaillé',  'icon' => 'bi-wifi'],
+    'hotspot.php'   => ['label' => 'Hotspot',          'icon' => 'bi-people'],
+    'inventory.php' => ['label' => 'Stocks & Import CSV','icon' => 'bi-box-seam'],
+    'finances.php' => ['label' => 'Finances',          'icon' => 'bi-cash-coin'],
+    'reports.php'   => ['label' => 'Rapports',         'icon' => 'bi-graph-up'],
+    'ads.php'       => ['label' => 'Annonces',         'icon' => 'bi-megaphone'],
+    'logs.php'      => ['label' => 'Logs',             'icon' => 'bi-journal-text'],
+    'settings.php'  => ['label' => 'Configuration',    'icon' => 'bi-sliders'],
+];
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= htmlspecialchars($pageTitle ?? 'ARA Tech WiFi Admin') ?></title>
+    <title><?= htmlspecialchars((string)$pageTitle, ENT_QUOTES, 'UTF-8') ?></title>
+
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" rel="stylesheet">
+
+    <?php if (!empty($headExtra ?? '')): ?>
+        <?= $headExtra ?>
+    <?php endif; ?>
+
     <style>
-        :root { --bleu-nuit: #0b2c82; --orange: #f5a623; }
-        body { background: #f4f6f9; font-family: 'Segoe UI', sans-serif; padding-bottom: 60px; overflow-x: hidden;}
-        .navbar-custom { background: var(--bleu-nuit); }
-        .navbar-brand { font-weight: 700; font-size: 1.3rem; color: #fff !important; }
-        .subnavbar { background: #1a1e2b; border-bottom: 3px solid var(--orange); }
-        .subnavbar .nav-link { color: rgba(255,255,255,0.8) !important; font-size: 0.9rem; padding: 0.5rem 0.8rem; }
-        .subnavbar .nav-link:hover,
-        .subnavbar .nav-link.active { color: var(--orange) !important; background: rgba(255,255,255,0.1); border-radius: 4px; }
-        .subnavbar .nav-link i { margin-right: 4px; color: var(--orange); }
-        .card-custom { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 1.5rem; max-width: 100%;}
-        .card-header-custom { background: var(--bleu-nuit); color: #fff; border-radius: 12px 12px 0 0 !important; font-weight: 600; }
-        .btn-orange { background: var(--orange); border: none; color: #fff; font-weight: 600; border-radius: 8px; }
-        .btn-orange:hover { background: #e5941f; color: #fff; }
-        .stat-value { font-size: 2rem; font-weight: 700; color: var(--bleu-nuit); }
-        .stat-label { font-size: 0.9rem; color: #6c757d; }
-        .status-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; }
-        .status-dot.online { background: #28a745; }
-        .status-dot.offline { background: #dc3545; }
-        .status-dot.unknown { background: #adb5bd; }
-        #backToTop {
-            position: fixed; bottom: 30px; right: 30px; display: none;
-            width: 48px; height: 48px; border-radius: 50%;
-            background: var(--orange); color: #fff; border: none;
-            font-size: 1.5rem; cursor: pointer; box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-            transition: background 0.2s; z-index: 1000;
+        :root {
+            --bleu-nuit: #0b2c82;
+            --bleu-nuit-dark: #081f5c;
+            --orange: #f5a623;
+            --page-bg: #f4f6f9;
         }
-        #backToTop:hover { background: #e5941f; }
+        body { background: var(--page-bg); font-family: 'Segoe UI', sans-serif; overflow-x: hidden; }
+        .app-shell { display:flex; min-height:100vh; }
+        .sidebar { width:250px; flex-shrink:0; background:linear-gradient(180deg,var(--bleu-nuit) 0%,var(--bleu-nuit-dark) 100%); color:#fff; display:flex; flex-direction:column; }
+        .sidebar-brand { font-weight:700; font-size:1.15rem; padding:1.25rem 1rem; border-bottom:3px solid var(--orange); }
+        .sidebar-nav { padding:.75rem 0; flex:1; overflow-y:auto; }
+        .sidebar-nav .nav-link { color:rgba(255,255,255,.85); padding:.65rem 1.1rem; font-size:.92rem; border-left:3px solid transparent; }
+        .sidebar-nav .nav-link i { width:20px; margin-right:8px; color:var(--orange); }
+        .sidebar-nav .nav-link:hover { background:rgba(255,255,255,.08); color:#fff; }
+        .sidebar-nav .nav-link.active { background:rgba(255,255,255,.12); color:#fff; border-left-color:var(--orange); font-weight:600; }
+        .sidebar-nav .nav-link.active i { color:#fff; }
+        .sidebar-nav .nav-section-title { text-transform:uppercase; font-size:.7rem; letter-spacing:.05em; color:rgba(255,255,255,.45); padding:1rem 1.1rem .35rem; }
+        .sidebar-footer { padding:.85rem 1.1rem; border-top:1px solid rgba(255,255,255,.1); }
+        .main-content { flex:1; min-width:0; }
+        .topbar { background:#fff; border-bottom:1px solid #e5e7eb; padding:.85rem 1.25rem; display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+        #sidebarToggle { display:none; }
+        .page-content { padding:1rem .75rem 2rem; }
+        .card-custom { border:none; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.08); margin-bottom:1.5rem; }
+        .card-header-custom { background:var(--bleu-nuit); color:#fff; border-radius:12px 12px 0 0 !important; font-weight:600; }
+        .stat-value { font-size:1.9rem; font-weight:700; color:var(--bleu-nuit); }
+        .stat-label { font-size:.88rem; color:#6c757d; }
+        .btn-orange { background:var(--orange); border:none; color:#fff; font-weight:600; }
+        .btn-orange:hover { background:#e5941f; color:#fff; }
+        .app-footer { color:#8a93a3; font-size:.8rem; padding:0 1rem 1.5rem; }
+        @media (max-width:991.98px) {
+            .sidebar { position:fixed; left:-260px; top:0; bottom:0; z-index:1040; transition:left .2s ease; }
+            .sidebar.open { left:0; }
+            #sidebarToggle { display:inline-flex; }
+            .sidebar-backdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:1030; }
+            .sidebar-backdrop.open { display:block; }
+        }
     </style>
 </head>
 <body>
-    <!-- Barre principale -->
-    <nav class="navbar navbar-custom navbar-dark px-3">
-        <a href="index.php" class="navbar-brand">⚡ ARA Tech WiFi Admin</a>
-        <div class="ms-auto">
-            <a href="logout.php" class="btn btn-outline-light btn-sm">Déconnexion</a>
+<div class="app-shell">
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">⚡ ARA Tech WiFi</div>
+
+        <nav class="sidebar-nav" aria-label="Navigation administration">
+            <?php foreach ($navItems as $href => $item): ?>
+                <a class="nav-link <?= $currentPage === $href ? 'active' : '' ?>"
+                   href="<?= htmlspecialchars($href, ENT_QUOTES, 'UTF-8') ?>"
+                   <?= $currentPage === $href ? 'aria-current="page"' : '' ?>>
+                    <i class="bi <?= htmlspecialchars($item['icon'], ENT_QUOTES, 'UTF-8') ?>"></i>
+                    <?= htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8') ?>
+                </a>
+            <?php endforeach; ?>
+
+            <div class="nav-section-title">À venir</div>
+            <a class="nav-link disabled-soon" href="#business-section">
+                <i class="bi bi-briefcase"></i> Gestion Business
+                <span class="badge bg-warning text-dark ms-1">Bientôt</span>
+            </a>
+            <a class="nav-link disabled-soon" href="#wifizone-section">
+                <i class="bi bi-router"></i> WiFi Zone
+                <span class="badge bg-warning text-dark ms-1">Bientôt</span>
+            </a>
+        </nav>
+
+        <div class="sidebar-footer">
+            <a href="logout.php" class="btn btn-outline-light btn-sm w-100">
+                <i class="bi bi-box-arrow-right"></i> Déconnexion
+            </a>
         </div>
-    </nav>
+    </aside>
 
-    <!-- Sous-menu navigation rapide (toujours visible) -->
-    <div class="subnavbar py-1">
-        <div class="container-fluid">
-            <ul class="nav flex-wrap">
-                <li class="nav-item"><a class="nav-link" href="index.php"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
-                <li class="nav-item"><a class="nav-link" href="status.php"><i class="bi bi-wifi"></i> Statut</a></li>
-                <li class="nav-item"><a class="nav-link" href="hotspot.php"><i class="bi bi-people"></i> Hotspot</a></li>
-                <li class="nav-item"><a class="nav-link" href="user-import.php"><i class="bi bi-file-earmark-arrow-up"></i> Import CSV Hotspot</a></li>
-                <li class="nav-item"><a class="nav-link" href="inventory.php"><i class="bi bi-box-seam"></i> Gestion des Stocks</a></li>
-                <li class="nav-item"><a class="nav-link" href="finances.php"><i class="bi bi-cash-coin"></i> Finances</a></li>
-                <li class="nav-item"><a class="nav-link" href="ads.php"><i class="bi bi-megaphone"></i> Annonces</a></li>
-                <li class="nav-item"><a class="nav-link" href="logs.php"><i class="bi bi-journal-text"></i> Logs</a></li>
-                <li class="nav-item"><a class="nav-link" href="reports.php"><i class="bi bi-graph-up"></i> Rapports</a></li>
-                <li class="nav-item"><a class="nav-link" href="settings.php"><i class="bi bi-sliders"></i> Configuration</a></li>
-            </ul>
+    <div class="main-content">
+        <div class="topbar">
+            <div class="d-flex align-items-center gap-2">
+                <button id="sidebarToggle" type="button" class="btn btn-outline-secondary btn-sm"
+                        aria-label="Ouvrir le menu" aria-expanded="false" aria-controls="sidebar">
+                    <i class="bi bi-list"></i>
+                </button>
+                <h5 class="mb-0"><?= htmlspecialchars((string)$pageTitle, ENT_QUOTES, 'UTF-8') ?></h5>
+            </div>
+            <span class="text-muted small d-none d-md-inline">ARA Tech WiFi Admin</span>
         </div>
-    </div>
 
-    <!-- Bouton retour en haut -->
-    <button id="backToTop" title="Retour en haut"><i class="bi bi-arrow-up"></i></button>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        const backToTopBtn = document.getElementById('backToTop');
-        window.addEventListener('scroll', () => {
-            backToTopBtn.style.display = window.scrollY > 300 ? 'block' : 'none';
-        });
-        backToTopBtn.addEventListener('click', () => {
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-        });
-    </script>
+        <main class="page-content">
