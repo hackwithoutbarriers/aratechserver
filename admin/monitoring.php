@@ -52,6 +52,20 @@ function monitoring_status_class(string $status): string
     };
 }
 
+function ara_monitoring_embed(string $file): void
+{
+    if (!is_file($file)) {
+        echo '<div class="alert alert-danger">Vue de monitoring indisponible.</div>';
+        return;
+    }
+    try {
+        ara_render_embedded_page($file);
+    } catch (Throwable $e) {
+        error_log('[Monitoring] embedded view failed: ' . $e->getMessage());
+        echo '<div class="alert alert-danger"><strong>Impossible de charger cette vue de monitoring.</strong> Vérifie les dépendances de la page concernée.</div>';
+    }
+}
+
 require __DIR__ . '/header.php';
 ?>
 <div class="container-fluid px-3 px-md-4 py-4">
@@ -77,33 +91,27 @@ require __DIR__ . '/header.php';
                         <span class="status-pill <?= monitoring_status_class($monitoring['status']) ?>"><span class="status-dot <?= monitoring_status_class($monitoring['status']) ?>"></span><?= htmlspecialchars($monitoring['status'], ENT_QUOTES, 'UTF-8') ?></span>
                     </div>
                     <div class="card-body">
-                        <div class="row g-3">
-                            <?php
-                            $router = $monitoring['snapshot'] ?? [];
-                            $cards = [
-                                ['Identité', $router['identity'] ?? '—', 'bi-hdd-network'],
-                                ['Version', $router['version'] ?? '—', 'bi-cpu'],
-                                ['Uptime', $router['uptime'] ?? '—', 'bi-clock-history'],
-                                ['Sessions actives', $router['active_count'] ?? '—', 'bi-people'],
-                                ['CPU', isset($router['cpu']) ? ((int)$router['cpu'] . ' %') : '—', 'bi-speedometer2'],
-                                ['Dernier snapshot', $router['last_snapshot'] ?? '—', 'bi-arrow-repeat'],
-                            ];
-                            foreach ($cards as [$label, $value, $icon]):
-                                $metricLabel = $label;
-                                $metricValue = (string)$value;
-                                $metricIcon = $icon;
-                                $metricTone = 'primary';
-                                require __DIR__ . '/components/metric-card.php';
-                                unset($metricLabel, $metricValue, $metricIcon, $metricTone);
-                            endforeach;
-                            ?>
-                        </div>
+                        <?php
+                        $router = $monitoring['snapshot'] ?? [];
+                        $cards = [
+                            ['Identité', $router['identity'] ?? '—', 'bi-hdd-network'],
+                            ['Version', $router['version'] ?? '—', 'bi-cpu'],
+                            ['Uptime', $router['uptime'] ?? '—', 'bi-clock-history'],
+                            ['Sessions actives', $router['active_count'] ?? '—', 'bi-people'],
+                            ['CPU', isset($router['cpu']) ? ((int)$router['cpu'] . ' %') : '—', 'bi-speedometer2'],
+                            ['Dernier snapshot', $router['last_snapshot'] ?? '—', 'bi-arrow-repeat'],
+                        ];
+                        foreach ($cards as [$metricLabel, $metricValue, $metricIcon]):
+                            $metricTone = 'primary';
+                            require __DIR__ . '/components/metric-card.php';
+                            unset($metricTone);
+                        endforeach;
+                        ?>
                         <div class="mt-3 text-muted small"><i class="bi bi-clock-history"></i> Âge du snapshot : <?= $monitoring['age_seconds'] === null ? '—' : (int)$monitoring['age_seconds'] . ' s' ?></div>
                         <a class="btn btn-orange btn-sm mt-3" href="monitoring.php?tab=status"><i class="bi bi-activity"></i> Ouvrir le statut réseau complet</a>
                     </div>
                 </div>
             </div>
-
             <div class="col-xl-5">
                 <div class="card card-custom h-100">
                     <div class="card-header card-header-custom d-flex justify-content-between align-items-center">
@@ -114,15 +122,12 @@ require __DIR__ . '/header.php';
                         <?php if ($monitoring['logs_error']): ?>
                             <div class="alert alert-warning m-3 mb-0"><?= htmlspecialchars((string)$monitoring['logs_error'], ENT_QUOTES, 'UTF-8') ?></div>
                         <?php elseif (!$monitoring['logs']): ?>
-                            <div class="text-muted text-center py-5">Aucun log pour aujourd’hui.</div>
+                            <div class="text-muted text-center py-5">Aucun log pour la période sélectionnée.</div>
                         <?php else: ?>
                             <div class="list-group list-group-flush">
                                 <?php foreach (array_reverse($monitoring['logs']) as $log): ?>
                                     <div class="list-group-item">
-                                        <div class="d-flex justify-content-between gap-2">
-                                            <span class="fw-semibold small"><?= htmlspecialchars((string)($log['topics'] ?? 'system'), ENT_QUOTES, 'UTF-8') ?></span>
-                                            <span class="text-muted small"><?= htmlspecialchars((string)($log['log_time'] ?? ''), ENT_QUOTES, 'UTF-8') ?></span>
-                                        </div>
+                                        <div class="d-flex justify-content-between gap-2"><span class="fw-semibold small"><?= htmlspecialchars((string)($log['topics'] ?? 'system'), ENT_QUOTES, 'UTF-8') ?></span><span class="text-muted small"><?= htmlspecialchars((string)($log['log_time'] ?? ''), ENT_QUOTES, 'UTF-8') ?></span></div>
                                         <div class="small text-muted mt-1"><?= htmlspecialchars((string)($log['message'] ?? ''), ENT_QUOTES, 'UTF-8') ?></div>
                                     </div>
                                 <?php endforeach; ?>
@@ -134,9 +139,9 @@ require __DIR__ . '/header.php';
             </div>
         </div>
     <?php elseif ($tab === 'status'): ?>
-        <?php ara_render_embedded_page(__DIR__ . '/partials/monitoring/status.php'); ?>
+        <?php ara_monitoring_embed(__DIR__ . '/partials/monitoring/status.php'); ?>
     <?php elseif ($tab === 'logs'): ?>
-        <?php ara_render_embedded_page(__DIR__ . '/partials/monitoring/logs.php'); ?>
+        <?php ara_monitoring_embed(__DIR__ . '/partials/monitoring/logs.php'); ?>
     <?php endif; ?>
 </div>
 <?php require __DIR__ . '/footer.php'; ?>
