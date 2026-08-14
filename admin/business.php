@@ -9,6 +9,21 @@ $tabs = ['overview'=>'Vue d’ensemble','finances'=>'Finances','reports'=>'Rappo
 if (!isset($tabs[$tab])) $tab='overview';
 $periodKey = $_GET['period'] ?? 'thismonth';
 if (!in_array($periodKey,['today','7days','thismonth','lastmonth'],true)) $periodKey='thismonth';
+
+function ara_business_embed(string $file): void
+{
+    if (!is_file($file)) {
+        echo '<div class="alert alert-danger">Vue Business indisponible.</div>';
+        return;
+    }
+    try {
+        ara_render_embedded_page($file);
+    } catch (Throwable $e) {
+        error_log('[Business] embedded view failed: ' . $e->getMessage());
+        echo '<div class="alert alert-danger"><strong>Impossible de charger cette vue Business.</strong> Vérifie les dépendances de la page concernée.</div>';
+    }
+}
+
 require __DIR__ . '/header.php';
 ?>
 <div class="container-fluid px-3 px-md-4 py-4">
@@ -21,13 +36,13 @@ require __DIR__ . '/header.php';
         <?php endforeach; ?>
     </ul>
     <?php if ($tab==='overview'): ?>
-        <?php require __DIR__ . '/partials/business/overview-v2.php'; ?>
+        <?php $overview = __DIR__ . '/partials/business/overview-v2.php'; if (is_file($overview)) { require $overview; } else { echo '<div class="alert alert-danger">Command Center Business indisponible.</div>'; } ?>
     <?php elseif ($tab==='finances'): ?>
-        <?php ara_render_embedded_page(__DIR__ . '/partials/business/finances.php'); ?>
+        <?php ara_business_embed(__DIR__ . '/partials/business/finances.php'); ?>
     <?php elseif ($tab==='reports'): ?>
-        <?php ara_render_embedded_page(__DIR__ . '/partials/business/reports.php'); ?>
+        <?php ara_business_embed(__DIR__ . '/partials/business/reports.php'); ?>
     <?php elseif ($tab==='ads'): ?>
-        <?php ara_render_embedded_page(__DIR__ . '/partials/business/ads.php'); ?>
+        <?php ara_business_embed(__DIR__ . '/partials/business/ads.php'); ?>
     <?php endif; ?>
 </div>
 <script>
