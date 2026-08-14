@@ -36,7 +36,7 @@ require __DIR__ . '/header.php';
         <?php endforeach; ?>
     </ul>
     <?php if ($tab==='overview'): ?>
-        <?php $overview = __DIR__ . '/partials/business/overview-v2.php'; if (is_file($overview)) { require $overview; } else { echo '<div class="alert alert-danger">Command Center Business indisponible.</div>'; } ?>
+        <?php $periodKey = $periodKey; require __DIR__ . '/partials/business/overview-v3.php'; ?>
     <?php elseif ($tab==='finances'): ?>
         <?php ara_business_embed(__DIR__ . '/partials/business/finances.php'); ?>
     <?php elseif ($tab==='reports'): ?>
