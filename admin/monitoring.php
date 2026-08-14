@@ -4,7 +4,14 @@ require __DIR__ . '/auth.php';
 require_once __DIR__ . '/components/embedded-page.php';
 $pageTitle = 'Monitoring — ARA Tech WiFi';
 require __DIR__ . '/header.php';
-$tab = $_GET['tab'] ?? 'overview';
+$tab = $_GET['tab'] ?? null;
+if ($tab === null) {
+    if (isset($_GET['search'], $_GET['page']) || isset($_GET['level']) || isset($_GET['start'], $_GET['end'])) {
+        $tab = 'logs';
+    } else {
+        $tab = 'overview';
+    }
+}
 $tabs = ['overview' => 'Vue d’ensemble', 'status' => 'Statut réseau', 'logs' => 'Logs système'];
 if (!isset($tabs[$tab])) { $tab = 'overview'; }
 ?>
@@ -28,4 +35,14 @@ if (!isset($tabs[$tab])) { $tab = 'overview'; }
         <?php ara_render_embedded_page(__DIR__ . '/partials/monitoring/logs.php'); ?>
     <?php endif; ?>
 </div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const tab = <?= json_encode($tab) ?>;
+    document.querySelectorAll('form').forEach(function (form) {
+        if (!form.querySelector('input[name="tab"]')) {
+            const hidden = document.createElement('input'); hidden.type = 'hidden'; hidden.name = 'tab'; hidden.value = tab; form.appendChild(hidden);
+        }
+    });
+});
+</script>
 <?php require __DIR__ . '/footer.php'; ?>
