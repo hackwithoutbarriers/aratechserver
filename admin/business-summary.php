@@ -49,7 +49,10 @@ try {
         'period' => ['start' => $start, 'end' => $end],
         'revenue' => $sales['revenue'],
         'tickets_sold' => $sales['tickets'],
+        'activation_count' => $sales['tickets'],
         'duplicates_removed' => $sales['duplicates_removed'],
+        'source' => $sales['source'],
+        'source_label' => $sales['source_label'],
         'revenue_chart' => $sales['daily'],
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 } catch (Throwable $e) {
