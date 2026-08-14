@@ -1,8 +1,11 @@
 <?php
 declare(strict_types=1);
+if (!empty($_GET['embed'])) {
+    return;
+}
 ?>
-        <button id="backToTop" title="Retour en haut" aria-label="Retour en haut"><i class="bi bi-arrow-up"></i></button>
-    </div><!-- /.main-content -->
+<button id="backToTop" title="Retour en haut" aria-label="Retour en haut"><i class="bi bi-arrow-up"></i></button>
+</div><!-- /.main-content -->
 </div><!-- /.app-shell -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
