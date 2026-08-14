@@ -1,14 +1,67 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/auth.php';
-require __DIR__ . '/legacy-redirect.php';
+$config = require __DIR__ . '/../config.php';
+$pageTitle = 'Hotspot - ARA Tech WiFi';
+$activeTab = $_GET['tab'] ?? 'users';
 
-$tab = $_GET['tab'] ?? 'users';
-if (!in_array($tab, ['users', 'active', 'vouchers', 'profiles'], true)) {
-    $tab = 'users';
-}
+require __DIR__ . '/header.php';
+?>
 
-ara_legacy_redirect('operations.php', [
-    'tab' => 'hotspot',
-    'legacy_tab' => $tab,
-]);
+<div class="container-fluid mt-4">
+    <h2 class="mb-3">📡 Gestion du Hotspot</h2>
+
+    <!--
+        Architecture (à garder en tête en modifiant un onglet) :
+        toutes les données affichées ici viennent du miroir Supabase
+        alimenté par le routeur (voir mikrotik-scripts/), jamais d'une
+        connexion directe Render → routeur (impossible en pratique, le
+        routeur est derrière une IP privée). Les actions qui modifient
+        un utilisateur (créer/modifier/activer/désactiver/supprimer)
+        passent par la file hotspot_commands côté API et sont donc
+        asynchrones : le routeur les applique au prochain cycle de sync.
+    -->
+    <ul class="nav nav-tabs mb-4">
+        <li class="nav-item">
+            <a class="nav-link <?= $activeTab === 'users' ? 'active' : '' ?>" href="?tab=users">
+                <i class="bi bi-people"></i> Utilisateurs
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= $activeTab === 'active' ? 'active' : '' ?>" href="?tab=active">
+                <i class="bi bi-wifi"></i> Sessions actives
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= $activeTab === 'vouchers' ? 'active' : '' ?>" href="?tab=vouchers">
+                <i class="bi bi-ticket-perforated"></i> Vouchers
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= $activeTab === 'profiles' ? 'active' : '' ?>" href="?tab=profiles">
+                <i class="bi bi-pie-chart"></i> Profils
+            </a>
+        </li>
+    </ul>
+
+    <div class="tab-content">
+        <?php
+        switch ($activeTab) {
+            case 'active':
+                include __DIR__ . '/active-users.php';
+                break;
+            case 'vouchers':
+                include __DIR__ . '/vouchers.php';
+                break;
+            case 'profiles':
+                include __DIR__ . '/profiles.php';
+                break;
+            default:
+                include __DIR__ . '/users.php';
+        }
+        ?>
+    </div>
+</div>
+
+</body>
+</html>
