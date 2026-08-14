@@ -57,54 +57,40 @@ require __DIR__ . '/header.php';
     <div class="card card-custom" id="network-section">
         <div class="card-header card-header-custom d-flex justify-content-between align-items-center">
             <span><i class="bi bi-hdd-network"></i> Statut Réseau — Synchronisation MikroTik</span>
-            <span class="status-pill <?= strtolower($status) ?>"><span class="status-dot <?= strtolower($status) ?>"></span><?= htmlspecialchars($statusLabel) ?></span>
+            <?php $statusCode = $status; $statusLabelOverride = $statusLabel; require __DIR__ . '/components/status-pill.php'; unset($statusLabelOverride, $statusCode); ?>
         </div>
         <div class="card-body">
             <?php if ($status === 'ONLINE' && $s): ?>
-                <div class="alert alert-success d-flex align-items-start gap-2 mb-3">
-                    <i class="bi bi-check-circle-fill fs-5"></i>
-                    <div><strong>Le MikroTik est actuellement joignable par son canal de synchronisation.</strong><div class="small mt-1">Le routeur pousse son état vers ARA Tech Server ; aucune connexion entrante Render → RouterOS n'est utilisée.</div></div>
-                </div>
+                <?php $alertType='success'; $alertIcon='bi bi-check-circle-fill'; $alertTitle='Le MikroTik est actuellement joignable par son canal de synchronisation.'; $alertMessage="Le routeur pousse son état vers ARA Tech Server ; aucune connexion entrante Render → RouterOS n'est utilisée."; require __DIR__ . '/components/alert-card.php'; unset($alertType,$alertIcon,$alertTitle,$alertMessage); ?>
             <?php elseif ($status === 'OFFLINE' && $s): ?>
-                <div class="alert alert-warning d-flex align-items-start gap-2 mb-3">
-                    <i class="bi bi-exclamation-triangle-fill fs-5"></i>
-                    <div><strong>Le dernier heartbeat du MikroTik est périmé.</strong><div class="small mt-1">Vérifie le scheduler et le script <code>push-hotspot-status.rsc</code> sur le routeur.</div></div>
-                </div>
+                <?php $alertType='warning'; $alertIcon='bi bi-exclamation-triangle-fill'; $alertTitle='Le dernier heartbeat du MikroTik est périmé.'; $alertMessage='Vérifie le scheduler et le script push-hotspot-status.rsc sur le routeur.'; require __DIR__ . '/components/alert-card.php'; unset($alertType,$alertIcon,$alertTitle,$alertMessage); ?>
             <?php else: ?>
-                <div class="alert alert-secondary d-flex align-items-start gap-2 mb-3">
-                    <i class="bi bi-question-circle-fill fs-5"></i>
-                    <div><strong>Aucun snapshot exploitable.</strong><div class="small mt-1"><?= htmlspecialchars($routerState['error'] ?? 'Le routeur ne s’est pas encore synchronisé avec le serveur.') ?></div></div>
-                </div>
+                <?php $alertType='secondary'; $alertIcon='bi bi-question-circle-fill'; $alertTitle='Aucun snapshot exploitable.'; $alertMessage=$routerState['error'] ?? 'Le routeur ne s’est pas encore synchronisé avec le serveur.'; require __DIR__ . '/components/alert-card.php'; unset($alertType,$alertIcon,$alertTitle,$alertMessage); ?>
             <?php endif; ?>
             <div class="row g-3">
-                <div class="col-6 col-md-3"><div class="stat-label">Identité</div><div class="fw-semibold"><?= htmlspecialchars((string)($s['router_identity'] ?? '—')) ?></div></div>
-                <div class="col-6 col-md-3"><div class="stat-label">Version RouterOS</div><div class="fw-semibold"><?= htmlspecialchars((string)($s['router_version'] ?? '—')) ?></div></div>
-                <div class="col-6 col-md-3"><div class="stat-label">Uptime</div><div class="fw-semibold"><?= htmlspecialchars((string)($s['router_uptime'] ?? '—')) ?></div></div>
-                <div class="col-6 col-md-3"><div class="stat-label">Sessions actives</div><div class="fw-semibold"><?= isset($s['active_count']) ? (int)$s['active_count'] : '—' ?></div></div>
-                <div class="col-6 col-md-3"><div class="stat-label">CPU</div><div class="fw-semibold"><?= $s && $s['cpu_load'] !== null ? (int)$s['cpu_load'] . ' %' : '—' ?></div></div>
-                <div class="col-6 col-md-3"><div class="stat-label">Mémoire libre</div><div class="fw-semibold"><?= htmlspecialchars(ara_format_bytes(isset($s['memory_free']) ? (int)$s['memory_free'] : null)) ?></div></div>
-                <div class="col-6 col-md-3"><div class="stat-label">Mémoire totale</div><div class="fw-semibold"><?= htmlspecialchars(ara_format_bytes(isset($s['memory_total']) ? (int)$s['memory_total'] : null)) ?></div></div>
-                <div class="col-6 col-md-3"><div class="stat-label">Dernière synchronisation</div><div class="fw-semibold"><?= htmlspecialchars((string)($s['received_at'] ?? '—')) ?></div></div>
+                <?php $metricLabel='Identité'; $metricValue=(string)($s['router_identity'] ?? '—'); $metricIcon='bi-hdd-network'; $metricTone='primary'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone); ?>
+                <?php $metricLabel='Version RouterOS'; $metricValue=(string)($s['router_version'] ?? '—'); $metricIcon='bi-cpu'; $metricTone='info'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone); ?>
+                <?php $metricLabel='Uptime'; $metricValue=(string)($s['router_uptime'] ?? '—'); $metricIcon='bi-clock-history'; $metricTone='primary'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone); ?>
+                <?php $metricLabel='Sessions actives'; $metricValue=isset($s['active_count']) ? (string)(int)$s['active_count'] : '—'; $metricIcon='bi-people'; $metricTone='success'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone); ?>
+                <?php $metricLabel='CPU'; $metricValue=($s && $s['cpu_load'] !== null) ? (int)$s['cpu_load'] . ' %' : '—'; $metricIcon='bi-speedometer2'; $metricTone='warning'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone); ?>
+                <?php $metricLabel='Mémoire libre'; $metricValue=ara_format_bytes(isset($s['memory_free']) ? (int)$s['memory_free'] : null); $metricIcon='bi-memory'; $metricTone='success'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone); ?>
+                <?php $metricLabel='Mémoire totale'; $metricValue=ara_format_bytes(isset($s['memory_total']) ? (int)$s['memory_total'] : null); $metricIcon='bi-memory'; $metricTone='primary'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone); ?>
+                <?php $metricLabel='Dernière synchronisation'; $metricValue=(string)($s['received_at'] ?? '—'); $metricIcon='bi-arrow-repeat'; $metricTone='info'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone); ?>
             </div>
             <?php if ($routerState['age_seconds'] !== null): ?>
                 <div class="mt-3 text-muted small"><i class="bi bi-clock-history"></i> Âge du dernier snapshot : <?= (int)$routerState['age_seconds'] ?> s. Seuil ONLINE : <?= DASHBOARD_ROUTER_ONLINE_THRESHOLD ?> s.</div>
             <?php endif; ?>
-            <div class="mt-3"><a href="status.php" class="btn btn-outline-primary btn-sm"><i class="bi bi-wifi"></i> Voir le statut détaillé</a></div>
+            <div class="mt-3"><a href="monitoring.php" class="btn btn-outline-primary btn-sm"><i class="bi bi-activity"></i> Ouvrir le monitoring</a></div>
         </div>
     </div>
     <div class="card card-custom" id="business-section">
-        <div class="card-header card-header-custom d-flex flex-wrap justify-content-between align-items-center gap-2">
-            <span><i class="bi bi-briefcase"></i> Gestion Business</span>
-            <select id="period-select" class="form-select form-select-sm" style="width:auto;min-width:150px;">
-                <option value="today">Aujourd'hui</option><option value="yesterday">Hier</option><option value="7days">7 derniers jours</option><option value="thismonth" selected>Ce mois</option><option value="lastmonth">Mois précédent</option>
-            </select>
-        </div>
+        <div class="card-header card-header-custom d-flex flex-wrap justify-content-between align-items-center gap-2"><span><i class="bi bi-briefcase"></i> Gestion Business</span><select id="period-select" class="form-select form-select-sm" style="width:auto;min-width:150px;"><option value="today">Aujourd'hui</option><option value="yesterday">Hier</option><option value="7days">7 derniers jours</option><option value="thismonth" selected>Ce mois</option><option value="lastmonth">Mois précédent</option></select></div>
         <div class="card-body">
-            <div class="row" id="kpi-cards">
-                <div class="col-md-3 col-6 mb-3"><div class="card card-custom text-center p-3 mb-0"><div class="stat-value" id="kpi-revenue">--</div><div class="stat-label">Chiffre d'affaires</div></div></div>
-                <div class="col-md-3 col-6 mb-3"><div class="card card-custom text-center p-3 mb-0"><div class="stat-value" id="kpi-tickets">--</div><div class="stat-label">Tickets vendus</div></div></div>
-                <div class="col-md-3 col-6 mb-3"><div class="card card-custom text-center p-3 mb-0"><div class="stat-value" id="kpi-sessions">--</div><div class="stat-label">Sessions actives</div></div></div>
-                <div class="col-md-3 col-6 mb-3"><div class="card card-custom text-center p-3 mb-0"><div class="stat-value" id="kpi-subs">--</div><div class="stat-label">Abonnements</div></div></div>
+            <div class="row g-3" id="kpi-cards">
+                <div class="col-md-3 col-6"><div class="h-100"><?php $metricLabel="Chiffre d'affaires"; $metricValue='--'; $metricIcon='bi-cash-stack'; $metricTone='success'; $metricId='kpi-revenue'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone,$metricId); ?></div></div>
+                <div class="col-md-3 col-6"><div class="h-100"><?php $metricLabel='Tickets vendus'; $metricValue='--'; $metricIcon='bi-ticket-perforated'; $metricTone='primary'; $metricId='kpi-tickets'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone,$metricId); ?></div></div>
+                <div class="col-md-3 col-6"><div class="h-100"><?php $metricLabel='Sessions actives'; $metricValue='--'; $metricIcon='bi-wifi'; $metricTone='info'; $metricId='kpi-sessions'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone,$metricId); ?></div></div>
+                <div class="col-md-3 col-6"><div class="h-100"><?php $metricLabel='Abonnements'; $metricValue='--'; $metricIcon='bi-calendar-check'; $metricTone='warning'; $metricId='kpi-subs'; require __DIR__ . '/components/metric-card.php'; unset($metricLabel,$metricValue,$metricIcon,$metricTone,$metricId); ?></div></div>
             </div>
             <canvas id="revenueChart" height="90"></canvas>
         </div>
@@ -144,3 +130,4 @@ document.addEventListener('DOMContentLoaded', function () {
     fetchDashboard('thismonth');
 });
 </script>
+<?php require __DIR__ . '/footer.php'; ?>
