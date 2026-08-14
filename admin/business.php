@@ -4,6 +4,7 @@ require __DIR__ . '/auth.php';
 require_once __DIR__ . '/components/embedded-page.php';
 $pageTitle = 'Business — ARA Tech WiFi';
 require __DIR__ . '/header.php';
+
 $tab = $_GET['tab'] ?? null;
 if ($tab === null) {
     if (isset($_GET['periode'])) {
@@ -19,7 +20,7 @@ if (!isset($tabs[$tab])) { $tab = 'overview'; }
 ?>
 <div class="container-fluid px-3 px-md-4 py-4">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-        <div><h2 class="mb-1">Gestion Business</h2><p class="text-muted mb-0">Espace commercial unifié pour les revenus, dépenses, rapports et annonces.</p></div>
+        <div><h2 class="mb-1">Gestion Business</h2><p class="text-muted mb-0">Revenus, dépenses, rapports et annonces dans un espace unique.</p></div>
     </div>
     <ul class="nav nav-tabs mb-4">
         <?php foreach ($tabs as $key => $label): ?>
@@ -40,16 +41,4 @@ if (!isset($tabs[$tab])) { $tab = 'overview'; }
         <?php ara_render_embedded_page(__DIR__ . '/partials/business/ads.php'); ?>
     <?php endif; ?>
 </div>
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    const tab = <?= json_encode($tab) ?>;
-    document.querySelectorAll('form').forEach(function (form) {
-        if (!form.querySelector('input[name="tab"]')) {
-            const hidden = document.createElement('input');
-            hidden.type = 'hidden'; hidden.name = 'tab'; hidden.value = tab;
-            form.appendChild(hidden);
-        }
-    });
-});
-</script>
 <?php require __DIR__ . '/footer.php'; ?>
