@@ -1,25 +1,20 @@
 <?php
 declare(strict_types=1);
-require __DIR__ . '/auth.php';
+require_once __DIR__ . '/auth.php';
 $config = require __DIR__ . '/../config.php';
 $pageTitle = 'Hotspot - ARA Tech WiFi';
 $activeTab = $_GET['tab'] ?? 'users';
 
-require __DIR__ . '/header.php';
+require_once __DIR__ . '/header.php';
 ?>
 
 <div class="container-fluid mt-4">
     <h2 class="mb-3">📡 Gestion du Hotspot</h2>
 
     <!--
-        Architecture (à garder en tête en modifiant un onglet) :
-        toutes les données affichées ici viennent du miroir Supabase
-        alimenté par le routeur (voir mikrotik-scripts/), jamais d'une
-        connexion directe Render → routeur (impossible en pratique, le
-        routeur est derrière une IP privée). Les actions qui modifient
-        un utilisateur (créer/modifier/activer/désactiver/supprimer)
-        passent par la file hotspot_commands côté API et sont donc
-        asynchrones : le routeur les applique au prochain cycle de sync.
+        Architecture: toutes les données affichées ici viennent du miroir
+        Supabase alimenté par le routeur. Les mutations passent par la file
+        hotspot_commands ; aucune connexion Render → routeur n'est requise.
     -->
     <ul class="nav nav-tabs mb-4">
         <li class="nav-item">
