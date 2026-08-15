@@ -85,3 +85,4 @@ This is a reconciliation baseline, not a claim that the historical ledger is a p
 7. Compare the Mikhmon day total with `sales_transactions` for the same date.
 
 Rotate any database password or RouterOS/API key that was exposed during the audit before production rollout.
+x
