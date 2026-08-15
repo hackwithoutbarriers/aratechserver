@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-require __DIR__ . '/auth.php';
+require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
 require_once __DIR__ . '/../lib/hotspot_csv_import.php';
 
@@ -134,7 +134,13 @@ try {
     $dbError = 'Connexion à la base de données impossible : ' . $e->getMessage();
 }
 
-require __DIR__ . '/header.php';
+require_once __DIR__ . '/header.php';
+?>
+
+<!-- UI intentionally preserved: Phase Operations only hardens dependency loading and embedding. -->
+<?php
+// The original inventory view is preserved below; the header is now safe when
+// this file is rendered inside operations.php with embed=1.
 ?>
 <div class="container-fluid mt-4">
     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
@@ -142,7 +148,7 @@ require __DIR__ . '/header.php';
             <h2 class="mb-1">📦 Inventaire des codes WiFi</h2>
             <div class="text-muted">Une seule page pour importer et consulter les utilisateurs Hotspot.</div>
         </div>
-        <a class="btn btn-outline-primary" href="users.php">👥 Gérer les utilisateurs</a>
+        <a class="btn btn-outline-primary" href="operations.php?tab=hotspot">👥 Gérer les utilisateurs</a>
     </div>
 
     <?php if ($error): ?><div class="alert alert-danger"><?= htmlspecialchars($error) ?></div><?php endif; ?>
@@ -197,9 +203,9 @@ require __DIR__ . '/header.php';
         <div class="card-header card-header-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
             <span>📋 Codes WiFi importés</span>
             <div class="btn-group btn-group-sm">
-                <a class="btn <?= $statusFilter === 'all' ? 'btn-primary' : 'btn-outline-primary' ?>" href="inventory.php">Tous</a>
-                <a class="btn <?= $statusFilter === 'active' ? 'btn-success' : 'btn-outline-success' ?>" href="inventory.php?status=active">Actifs</a>
-                <a class="btn <?= $statusFilter === 'disabled' ? 'btn-secondary' : 'btn-outline-secondary' ?>" href="inventory.php?status=disabled">Désactivés</a>
+                <a class="btn <?= $statusFilter === 'all' ? 'btn-primary' : 'btn-outline-primary' ?>" href="operations.php?tab=inventory">Tous</a>
+                <a class="btn <?= $statusFilter === 'active' ? 'btn-success' : 'btn-outline-success' ?>" href="operations.php?tab=inventory&amp;status=active">Actifs</a>
+                <a class="btn <?= $statusFilter === 'disabled' ? 'btn-secondary' : 'btn-outline-secondary' ?>" href="operations.php?tab=inventory&amp;status=disabled">Désactivés</a>
             </div>
         </div>
         <div class="card-body p-0"><div class="table-responsive"><table class="table table-striped table-hover mb-0"><thead class="table-dark"><tr><th>Username</th><th>Profile</th><th>Time Limit</th><th>Data Limit</th><th>Comment</th><th>Statut</th><th>Dernière synchro</th></tr></thead><tbody>
@@ -207,7 +213,6 @@ require __DIR__ . '/header.php';
         </tbody></table></div></div>
     </div>
 
-    <a href="index.php" class="btn btn-outline-secondary mt-3"><i class="bi bi-arrow-left"></i> Retour au tableau de bord</a>
+    <a href="operations.php" class="btn btn-outline-secondary mt-3"><i class="bi bi-arrow-left"></i> Retour aux opérations</a>
 </div>
-</body>
-</html>
+<?php require_once __DIR__ . '/footer.php'; ?>
