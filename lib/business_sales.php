@@ -4,60 +4,112 @@ declare(strict_types=1);
 /**
  * Canonical business-sales aggregation.
  *
- * `sales_log` is a technical on-login journal. The supplied MikroTik on-login
- * script calls `log-sale` on every login/re-login, so raw rows are not sales.
- * The stable voucher identity available in the current payload is
- * username + comment (the comment contains the expiry marker generated on
- * first activation). We therefore count the first activation of each pair
- * once across the whole history, then filter those first activations into
- * the requested reporting period.
+ * From migration 014 onward, sales_transactions is the only source of truth
+ * for business KPIs. sales_log remains a technical/legacy journal and is not
+ * counted as revenue or tickets.
  *
- * This is an explicit historical ACTIVATION proxy, not a payment transaction
- * ledger. Future payment integrations should write a transaction id into a
- * dedicated sales table.
+ * The transaction ledger carries a unique transaction_id, so legitimate
+ * repeat purchases by the same username are allowed and HTTP retries are
+ * idempotent. Historical rows are marked inferred=true by migration 014.
  */
 function ara_business_sales(PDO $pdo, string $startDate, string $endDate): array
 {
-    $stmt = $pdo->prepare(
-        'WITH ranked AS (
-            SELECT
+    $source = 'transactions';
+    $sourceLabel = 'Transactions commerciales';
+    $inferred = 0;
+
+    try {
+        $stmt = $pdo->prepare(
+            'SELECT
                 id,
+                transaction_id,
                 sale_date,
                 sale_time,
                 username,
                 amount,
+                currency,
                 profile,
                 comment,
-                received_at,
-                ROW_NUMBER() OVER (
-                    PARTITION BY username, comment
-                    ORDER BY sale_date ASC, sale_time ASC NULLS FIRST,
-                             received_at ASC NULLS FIRST, id ASC
-                ) AS rn
-            FROM sales_log
-            WHERE amount > 0
-              AND username <> \'\'
-              AND comment <> \'\'
-        )
-        SELECT id, sale_date, sale_time, username, amount, profile, comment, received_at
-        FROM ranked
-        WHERE rn = 1
-          AND sale_date BETWEEN ? AND ?
-        ORDER BY sale_date ASC, sale_time ASC NULLS FIRST, received_at ASC NULLS FIRST, id ASC'
-    );
-    $stmt->execute([$startDate, $endDate]);
+                voucher_expires_at,
+                status,
+                source,
+                inferred,
+                created_at
+             FROM sales_transactions
+             WHERE sale_date BETWEEN ? AND ?
+               AND status = \'PAID\'
+               AND is_business_sale = TRUE
+             ORDER BY sale_date ASC, sale_time ASC NULLS FIRST, created_at ASC, id ASC'
+        );
+        $stmt->execute([$startDate, $endDate]);
+        $sales = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $sales = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $rawStmt = $pdo->prepare(
+            'SELECT COUNT(*)
+             FROM sales_transactions
+             WHERE sale_date BETWEEN ? AND ?'
+        );
+        $rawStmt->execute([$startDate, $endDate]);
+        $rawRows = (int)$rawStmt->fetchColumn();
 
-    $rawStmt = $pdo->prepare(
-        'SELECT COUNT(*)
-         FROM sales_log
-         WHERE sale_date BETWEEN ? AND ?
-           AND amount > 0
-           AND username <> \'\''
-    );
-    $rawStmt->execute([$startDate, $endDate]);
-    $rawRows = (int)$rawStmt->fetchColumn();
+        $inferredStmt = $pdo->prepare(
+            'SELECT COUNT(*)
+             FROM sales_transactions
+             WHERE sale_date BETWEEN ? AND ?
+               AND status = \'PAID\'
+               AND is_business_sale = TRUE
+               AND inferred = TRUE'
+        );
+        $inferredStmt->execute([$startDate, $endDate]);
+        $inferred = (int)$inferredStmt->fetchColumn();
+    } catch (Throwable $e) {
+        // Safe rollout fallback before migration 014 is applied. Once the
+        // ledger exists, this branch is never used and no legacy rows are
+        // mixed into current transaction data.
+        $source = 'legacy_activation_proxy';
+        $sourceLabel = 'Activations Hotspot historiques (proxy)';
+
+        $stmt = $pdo->prepare(
+            'WITH ranked AS (
+                SELECT
+                    id,
+                    sale_date,
+                    sale_time,
+                    username,
+                    amount,
+                    profile,
+                    comment,
+                    received_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY username, comment
+                        ORDER BY sale_date ASC, sale_time ASC NULLS FIRST,
+                                 received_at ASC NULLS FIRST, id ASC
+                    ) AS rn
+                FROM sales_log
+                WHERE amount > 0
+                  AND username <> \'\'
+                  AND comment <> \'\'
+                  AND lower(trim(COALESCE(profile, \'\'))) NOT IN (\'test\',\'testing\',\'demo\')
+            )
+            SELECT id, sale_date, sale_time, username, amount, profile, comment, received_at
+            FROM ranked
+            WHERE rn = 1
+              AND sale_date BETWEEN ? AND ?
+            ORDER BY sale_date ASC, sale_time ASC NULLS FIRST, received_at ASC NULLS FIRST, id ASC'
+        );
+        $stmt->execute([$startDate, $endDate]);
+        $sales = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $rawStmt = $pdo->prepare(
+            'SELECT COUNT(*)
+             FROM sales_log
+             WHERE sale_date BETWEEN ? AND ?
+               AND amount > 0'
+        );
+        $rawStmt->execute([$startDate, $endDate]);
+        $rawRows = (int)$rawStmt->fetchColumn();
+        $inferred = count($sales);
+    }
 
     $revenue = 0;
     $profileMap = [];
@@ -76,24 +128,20 @@ function ara_business_sales(PDO $pdo, string $startDate, string $endDate): array
         $profileMap[$profile]['nb']++;
         $profileMap[$profile]['ca'] += $amount;
 
-        if (!isset($dailyMap[$day])) {
-            $dailyMap[$day] = 0;
-        }
-        $dailyMap[$day] += $amount;
+        $dailyMap[$day] = ($dailyMap[$day] ?? 0) + $amount;
     }
 
     usort($profileMap, static fn(array $a, array $b): int => $b['ca'] <=> $a['ca']);
     ksort($dailyMap);
 
-    $duplicates = max(0, $rawRows - count($sales));
-
     return [
         'revenue' => $revenue,
         'tickets' => count($sales),
         'raw_rows' => $rawRows,
-        'duplicates_removed' => $duplicates,
-        'source' => 'activation_proxy',
-        'source_label' => 'Activations Hotspot dédupliquées',
+        'duplicates_removed' => $source === 'transactions' ? 0 : max(0, $rawRows - count($sales)),
+        'inferred_count' => $source === 'transactions' ? $inferred : count($sales),
+        'source' => $source,
+        'source_label' => $sourceLabel,
         'profile_stats' => array_values($profileMap),
         'daily' => array_map(
             static fn(string $day, int $total): array => ['sale_date' => $day, 'total' => $total],
