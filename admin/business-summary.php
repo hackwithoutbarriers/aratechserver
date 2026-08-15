@@ -1,6 +1,5 @@
 <?php
 declare(strict_types=1);
-
 require __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
 require_once __DIR__ . '/../lib/business_sales.php';
@@ -49,8 +48,10 @@ try {
         'period' => ['start' => $start, 'end' => $end],
         'revenue' => $sales['revenue'],
         'tickets_sold' => $sales['tickets'],
-        'activation_count' => $sales['tickets'],
+        'transaction_count' => $sales['tickets'],
+        'raw_rows' => $sales['raw_rows'],
         'duplicates_removed' => $sales['duplicates_removed'],
+        'inferred_count' => $sales['inferred_count'],
         'source' => $sales['source'],
         'source_label' => $sales['source_label'],
         'revenue_chart' => $sales['daily'],

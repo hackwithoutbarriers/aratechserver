@@ -1,13 +1,26 @@
 <?php
 declare(strict_types=1);
 
+// Embedded legacy views must never render the global shell again.
 if (!empty($_GET['embed'])) {
     return;
 }
 
+// Guard against accidental multiple inclusions of header.php in the same request.
+if (defined('ARA_ADMIN_HEADER_RENDERED')) {
+    return;
+}
+define('ARA_ADMIN_HEADER_RENDERED', true);
+
 $currentPage = basename($_SERVER['PHP_SELF'] ?? '');
 $pageTitle = $pageTitle ?? 'ARA Tech WiFi Admin';
-function ara_nav_active(array|string $pages, string $currentPage): string { return in_array($currentPage, (array)$pages, true) ? ' active' : ''; }
+
+if (!function_exists('ara_nav_active')) {
+    function ara_nav_active(array|string $pages, string $currentPage): string
+    {
+        return in_array($currentPage, (array)$pages, true) ? ' active' : '';
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="fr">
