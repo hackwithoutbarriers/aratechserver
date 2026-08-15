@@ -146,7 +146,7 @@ try {
          ) VALUES (
             :transaction_id, :sale_date, :sale_time, :username, :amount, :currency,
             :ip, :mac, :profile, :comment, :voucher_expires_at, :status,
-            :is_business_sale, :source, FALSE, CAST(:metadata AS jsonb), now(), now()
+            :is_business_sale, :source, FALSE, :metadata::jsonb, now(), now()
          )
          ON CONFLICT (transaction_id) DO NOTHING'
     );
