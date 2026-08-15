@@ -94,8 +94,8 @@ $isBusinessSale = array_key_exists('is_business_sale', $payload)
     ? filter_var($payload['is_business_sale'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE)
     : true;
 $voucherExpiry = trim((string)($payload['voucher_expires_at'] ?? $comment));
-saleDate = trim((string)($payload['date'] ?? ''));
-saleTime = trim((string)($payload['time'] ?? ''));
+$saleDate = trim((string)($payload['date'] ?? ''));
+$saleTime = trim((string)($payload['time'] ?? ''));
 
 if ($user === '' || $profile === '') {
     record_sale_error('user et profile sont obligatoires.', 422, 'INVALID_SALE');
