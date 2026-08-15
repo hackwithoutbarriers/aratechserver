@@ -31,60 +31,32 @@ CREATE TABLE IF NOT EXISTS sales_transactions (
 
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'sales_transactions_transaction_id_uniq'
-    ) THEN
-        ALTER TABLE sales_transactions
-            ADD CONSTRAINT sales_transactions_transaction_id_uniq
-            UNIQUE (transaction_id);
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sales_transactions_transaction_id_uniq') THEN
+        ALTER TABLE sales_transactions ADD CONSTRAINT sales_transactions_transaction_id_uniq UNIQUE (transaction_id);
     END IF;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'sales_transactions_amount_nonneg'
-    ) THEN
-        ALTER TABLE sales_transactions
-            ADD CONSTRAINT sales_transactions_amount_nonneg
-            CHECK (amount >= 0) NOT VALID;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sales_transactions_amount_nonneg') THEN
+        ALTER TABLE sales_transactions ADD CONSTRAINT sales_transactions_amount_nonneg CHECK (amount >= 0) NOT VALID;
     END IF;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'sales_transactions_status_valid'
-    ) THEN
-        ALTER TABLE sales_transactions
-            ADD CONSTRAINT sales_transactions_status_valid
-            CHECK (status IN ('PAID','VOID','REFUNDED')) NOT VALID;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sales_transactions_status_valid') THEN
+        ALTER TABLE sales_transactions ADD CONSTRAINT sales_transactions_status_valid CHECK (status IN ('PAID','VOID','REFUNDED')) NOT VALID;
     END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS idx_sales_transactions_sale_date
-    ON sales_transactions (sale_date);
-CREATE INDEX IF NOT EXISTS idx_sales_transactions_username
-    ON sales_transactions (username);
-CREATE INDEX IF NOT EXISTS idx_sales_transactions_status_date
-    ON sales_transactions (status, sale_date);
-CREATE INDEX IF NOT EXISTS idx_sales_transactions_profile_date
-    ON sales_transactions (profile, sale_date);
+CREATE INDEX IF NOT EXISTS idx_sales_transactions_sale_date ON sales_transactions (sale_date);
+CREATE INDEX IF NOT EXISTS idx_sales_transactions_username ON sales_transactions (username);
+CREATE INDEX IF NOT EXISTS idx_sales_transactions_status_date ON sales_transactions (status, sale_date);
+CREATE INDEX IF NOT EXISTS idx_sales_transactions_profile_date ON sales_transactions (profile, sale_date);
 
 -- One-time historical reconstruction.
--- This is explicitly marked inferred because the legacy journal contains
--- repeated on-login events, not authoritative payment transactions.
--- When a historical voucher has several observed amounts, the highest amount
--- is selected because the export demonstrates legacy price drift (e.g. 24H
--- rows at 100 and 200); this remains an inferred value and is shown as such.
+-- Historical rows are explicitly inferred because sales_log contains repeated
+-- on-login events, not authoritative payment transactions.
 INSERT INTO sales_transactions (
     transaction_id, sale_date, sale_time, username, amount, currency,
     ip, mac, profile, comment, voucher_expires_at, status,
     is_business_sale, source, inferred, metadata, created_at, updated_at
 )
 SELECT
-    'LEGACY-' || md5(
-        COALESCE(username, '') || E'\x1f' ||
-        COALESCE(comment, '') || E'\x1f' ||
-        COALESCE(profile, '')
-    ) AS transaction_id,
+    'LEGACY-' || md5(COALESCE(username, '') || E'\x1f' || COALESCE(comment, '') || E'\x1f' || COALESCE(profile, '')),
     legacy.sale_date,
     legacy.sale_time,
     legacy.username,
@@ -96,10 +68,7 @@ SELECT
     legacy.comment,
     legacy.comment,
     'PAID',
-    CASE
-        WHEN lower(trim(COALESCE(legacy.profile, ''))) IN ('test','testing','demo') THEN FALSE
-        ELSE TRUE
-    END,
+    CASE WHEN lower(trim(COALESCE(legacy.profile, ''))) IN ('test','testing','demo') THEN FALSE ELSE TRUE END,
     'LEGACY_INFERRED',
     TRUE,
     jsonb_build_object(
@@ -111,16 +80,11 @@ SELECT
     now()
 FROM (
     SELECT DISTINCT ON (username, comment)
-        id, sale_date, sale_time, username, amount, ip, mac,
-        profile, comment, received_at
+        id, sale_date, sale_time, username, amount, ip, mac, profile, comment, received_at
     FROM sales_log
-    WHERE amount > 0
-      AND username <> ''
-      AND comment <> ''
+    WHERE amount > 0 AND username <> '' AND comment <> ''
     ORDER BY username, comment, amount DESC, received_at ASC NULLS FIRST, id ASC
 ) AS legacy
 ON CONFLICT (transaction_id) DO NOTHING;
 
-INSERT INTO schema_migrations (version)
-VALUES ('014_sales_transactions')
-ON CONFLICT (version) DO NOTHING;
+INSERT INTO schema_migrations (version) VALUES ('014_sales_transactions') ON CONFLICT (version) DO NOTHING;
