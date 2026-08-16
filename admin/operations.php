@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/../db.php';
+require_once __DIR__ . '/../lib/hotspot_inventory.php';
 require_once __DIR__ . '/components/embedded-page.php';
 
 $config = require __DIR__ . '/../config.php';
@@ -12,10 +13,13 @@ $requestedTab = (string)($_GET['tab'] ?? 'overview');
 $tabs = [
     'overview' => 'Vue d’ensemble',
     'hotspot' => 'Hotspot',
-    'inventory' => 'Stocks & import',
+    'inventory' => 'Stock & import',
 ];
 $tab = array_key_exists($requestedTab, $tabs) ? $requestedTab : 'overview';
-$legacyTab = $_GET['legacy_tab'] ?? null;
+$legacyTab = (string)($_GET['legacy_tab'] ?? '');
+if ($legacyTab === 'vouchers' && $tab === 'hotspot') {
+    $tab = 'inventory';
+}
 
 $ops = [
     'users_total' => null,
@@ -23,8 +27,8 @@ $ops = [
     'users_disabled' => null,
     'profiles' => null,
     'sessions' => null,
-    'tickets_available' => null,
-    'tickets_sold' => null,
+    'stock_available' => null,
+    'stock_used' => null,
     'sync_at' => null,
     'sync_age' => null,
     'error' => null,
@@ -37,6 +41,15 @@ try {
     $ops['users_disabled'] = (int)$pdo->query("SELECT COUNT(*) FROM hotspot_users WHERE LOWER(disabled) = 'true'")->fetchColumn();
     $ops['users_active'] = max(0, $ops['users_total'] - $ops['users_disabled']);
     $ops['profiles'] = (int)$pdo->query('SELECT COUNT(*) FROM hotspot_profiles')->fetchColumn();
+
+    try {
+        hotspot_inventory_consume_logged_in($pdo);
+        $stock = hotspot_inventory_counts($pdo);
+        $ops['stock_available'] = $stock['available'];
+        $ops['stock_used'] = $stock['used'];
+    } catch (Throwable $ignored) {
+        // Migration 015 may not yet be deployed; Operations must remain usable.
+    }
 
     $snapshotStmt = $pdo->query(
         'SELECT active_count, received_at, snapshot_date, snapshot_time
@@ -54,13 +67,6 @@ try {
         } catch (Throwable $ignored) {
             $ops['sync_age'] = null;
         }
-    }
-
-    try {
-        $ops['tickets_available'] = (int)$pdo->query("SELECT COUNT(*) FROM tickets WHERE status = 'Disponible'")->fetchColumn();
-        $ops['tickets_sold'] = (int)$pdo->query("SELECT COUNT(*) FROM tickets WHERE status = 'Vendu'")->fetchColumn();
-    } catch (Throwable $ignored) {
-        // The ticket ledger is optional in older deployments; don't break Operations.
     }
 } catch (Throwable $e) {
     error_log('[Operations] summary load failed: ' . $e->getMessage());
@@ -107,7 +113,7 @@ require __DIR__ . '/header.php';
 
 <div class="container-fluid px-3 px-md-4 py-4">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-        <div><h2 class="mb-1">Opérations</h2><p class="text-muted mb-0">Centre de pilotage du Hotspot, des sessions et du stock.</p></div>
+        <div><h2 class="mb-1">Opérations</h2><p class="text-muted mb-0">Centre de pilotage du Hotspot, des sessions et du stock Mikhmon.</p></div>
         <span class="small text-muted">Source : Supabase / PostgreSQL</span>
     </div>
 
@@ -121,25 +127,24 @@ require __DIR__ . '/header.php';
 
     <?php if ($tab === 'overview'): ?>
         <div class="row g-3 mb-4">
-            <div class="col-6 col-xl-3"><div class="ops-kpi"><div class="label">Utilisateurs</div><div class="value"><?= $ops['users_total'] === null ? 'N/D' : number_format($ops['users_total'],0,',',' ') ?></div><div class="meta"><?= $ops['users_active'] === null ? '—' : number_format($ops['users_active'],0,',',' ') . ' actifs' ?></div></div></div>
+            <div class="col-6 col-xl-3"><div class="ops-kpi"><div class="label">Utilisateurs Hotspot</div><div class="value"><?= $ops['users_total'] === null ? 'N/D' : number_format($ops['users_total'],0,',',' ') ?></div><div class="meta"><?= $ops['users_active'] === null ? '—' : number_format($ops['users_active'],0,',',' ') . ' actifs' ?></div></div></div>
             <div class="col-6 col-xl-3"><div class="ops-kpi"><div class="label">Sessions actives</div><div class="value"><?= $ops['sessions'] === null ? 'N/D' : number_format($ops['sessions'],0,',',' ') ?></div><div class="meta">Dernier snapshot MikroTik</div></div></div>
-            <div class="col-6 col-xl-3"><div class="ops-kpi"><div class="label">Profils Hotspot</div><div class="value"><?= $ops['profiles'] === null ? 'N/D' : number_format($ops['profiles'],0,',',' ') ?></div><div class="meta">Profils synchronisés</div></div></div>
+            <div class="col-6 col-xl-3"><div class="ops-kpi"><div class="label">Stock disponible</div><div class="value"><?= $ops['stock_available'] === null ? 'N/D' : number_format($ops['stock_available'],0,',',' ') ?></div><div class="meta"><?= $ops['stock_used'] === null ? 'Migration stock requise' : number_format($ops['stock_used'],0,',',' ') . ' consommés' ?></div></div></div>
             <div class="col-6 col-xl-3"><div class="ops-kpi"><div class="label">Sync routeur</div><div class="value"><?= htmlspecialchars($ops['sync_age'] === null ? 'N/D' : ara_operations_format_age($ops['sync_age']), ENT_QUOTES, 'UTF-8') ?></div><div class="meta"><span class="status-dot <?= ara_operations_status_class($ops['sync_age']) ?>"></span><?= $ops['sync_age'] === null ? 'État inconnu' : ($ops['sync_age'] <= 360 ? 'À jour' : 'Périmée') ?></div></div></div>
         </div>
 
-        <div class="row g-3 mb-4">
-            <div class="col-12 col-xl-6"><a class="ops-action" href="operations.php?tab=hotspot"><div class="d-flex align-items-center gap-3"><div class="icon"><i class="bi bi-wifi"></i></div><div><div class="fw-semibold">Hotspot</div><div class="small text-muted">Utilisateurs, sessions actives, vouchers et profils.</div></div></div><i class="bi bi-arrow-right"></i></a></div>
-            <div class="col-12 col-xl-6"><a class="ops-action" href="operations.php?tab=inventory"><div class="d-flex align-items-center gap-3"><div class="icon"><i class="bi bi-box-seam"></i></div><div><div class="fw-semibold">Stocks & import</div><div class="small text-muted">Importer des codes WiFi et suivre leur état.</div></div></div><i class="bi bi-arrow-right"></i></a></div>
+        <div class="row g-3">
+            <div class="col-12 col-xl-6"><a class="ops-action" href="operations.php?tab=hotspot"><div class="d-flex align-items-center gap-3"><div class="icon"><i class="bi bi-wifi"></i></div><div><div class="fw-semibold">Hotspot</div><div class="small text-muted">Utilisateurs, sessions actives et profils techniques.</div></div></div><i class="bi bi-arrow-right"></i></a></div>
+            <div class="col-12 col-xl-6"><a class="ops-action" href="operations.php?tab=inventory"><div class="d-flex align-items-center gap-3"><div class="icon"><i class="bi bi-box-seam"></i></div><div><div class="fw-semibold">Stock & import Mikhmon</div><div class="small text-muted">Importer les utilisateurs générés et suivre leur consommation.</div></div></div><i class="bi bi-arrow-right"></i></a></div>
         </div>
 
-        <div class="row g-3">
-            <div class="col-12 col-xl-6"><div class="card card-custom h-100"><div class="card-header card-header-custom">Stock tickets</div><div class="card-body"><div class="row g-3"><div class="col-6"><div class="fw-semibold fs-4"><?= $ops['tickets_available'] === null ? 'N/D' : number_format($ops['tickets_available'],0,',',' ') ?></div><div class="text-muted small">Disponibles</div></div><div class="col-6"><div class="fw-semibold fs-4"><?= $ops['tickets_sold'] === null ? 'N/D' : number_format($ops['tickets_sold'],0,',',' ') ?></div><div class="text-muted small">Vendus</div></div></div></div></div></div>
-            <div class="col-12 col-xl-6"><div class="card card-custom h-100"><div class="card-header card-header-custom">Dernière synchronisation</div><div class="card-body"><div class="fw-semibold"><?= htmlspecialchars((string)($ops['sync_at'] ?: 'N/D'), ENT_QUOTES, 'UTF-8') ?></div><div class="text-muted small mt-1">Les données opérationnelles affichées ici proviennent du dernier miroir disponible.</div></div></div></div>
-        </div>
+        <div class="card card-custom mt-4"><div class="card-header card-header-custom">Règle de stock</div><div class="card-body"><div class="text-muted">Un utilisateur importé est considéré comme <strong>disponible</strong> jusqu’au premier login détecté après son import. Il passe alors à <strong>utilisé</strong> et quitte le stock actif. L’utilisateur reste dans <code>hotspot_users</code> comme miroir MikroTik.</div></div></div>
     <?php elseif ($tab === 'hotspot'): ?>
-        <?php ara_operations_embed(__DIR__ . '/partials/operations/hotspot.php', $legacyTab && in_array($legacyTab, ['users','active','vouchers','profiles'], true) ? ['tab' => $legacyTab] : ['tab' => 'users']); ?>
+        <?php ara_operations_embed(__DIR__ . '/partials/operations/hotspot.php', $legacyTab && in_array($legacyTab, ['users','active','profiles'], true) ? ['tab' => $legacyTab] : ['tab' => 'users']); ?>
     <?php else: ?>
-        <?php ara_operations_embed(__DIR__ . '/partials/operations/inventory.php'); ?>
+        <?php ara_operations_embed(__DIR__ . '/partials/operations/inventory.php', [
+            'preview' => $_GET['preview'] ?? null,
+        ]); ?>
     <?php endif; ?>
 </div>
 <?php require __DIR__ . '/footer.php'; ?>
